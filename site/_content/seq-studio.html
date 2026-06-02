@@ -1,0 +1,1409 @@
+<!--HEAD: <style>
+.seq-shell {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 1rem;
+  min-height: 720px;
+}
+@media (max-width: 900px) {
+  .seq-shell { grid-template-columns: 1fr; }
+}
+.seq-panel {
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+}
+.seq-panel h3 {
+  margin: 0;
+  padding: 0.72rem 0.85rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--accent);
+}
+.seq-panel-body { padding: 0.75rem; }
+.seq-file {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+.seq-file input,
+.seq-control {
+  background: var(--bg-code);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 0.42rem 0.58rem;
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+}
+.seq-status {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  min-height: 1.35rem;
+}
+.seq-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 620px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+.seq-list li {
+  display: grid;
+  grid-template-columns: 58px 1fr;
+  gap: 0.42rem;
+  padding: 0.5rem 0.55rem;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.seq-list li:hover { background: var(--bg-raised); }
+.seq-list li.active {
+  background: var(--accent-soft);
+  border-left: 2px solid var(--accent);
+}
+.seq-muted { color: var(--text-dim); }
+.seq-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-width: 0;
+}
+.seq-transport {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.seq-transport button {
+  cursor: pointer;
+}
+.seq-transport button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.seq-transport button:disabled,
+.seq-transport select:disabled,
+.seq-transport input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.seq-transport input[type="range"] { width: 9.5rem; }
+#seq-seek { width: min(26rem, 100%); }
+.seq-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(130px, 1fr));
+  gap: 0.6rem;
+}
+@media (max-width: 760px) {
+  .seq-grid { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
+}
+.seq-stat {
+  border: 1px solid var(--border);
+  background: var(--bg-code);
+  padding: 0.65rem;
+  font-family: var(--font-mono);
+  min-height: 4.5rem;
+}
+.seq-stat b {
+  color: var(--accent);
+  display: block;
+  margin-bottom: 0.25rem;
+}
+.roll-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+  margin-bottom: 0.55rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+.roll-tools button,
+.roll-tools select,
+.roll-tools input {
+  background: var(--bg-code);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.55rem;
+  font-family: var(--font-mono);
+}
+.roll-tools button { cursor: pointer; }
+.roll-tools button:disabled,
+.roll-tools select:disabled,
+.roll-tools input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.roll-time {
+  min-width: 13rem;
+  color: var(--accent);
+}
+canvas.seq-canvas {
+  width: 100%;
+  background: #080b10;
+  border: 1px solid var(--border);
+  display: block;
+}
+#seq-roll { height: 640px; }
+#seq-waveform {
+  height: 170px;
+  margin-top: 0.65rem;
+}
+.seq-inspector {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+.seq-inspector div {
+  border: 1px solid var(--border);
+  background: var(--bg-code);
+  padding: 0.5rem;
+}
+.seq-inspector b {
+  display: block;
+  color: var(--text-dim);
+  font-weight: 400;
+  margin-bottom: 0.16rem;
+}
+</style>
+<script src="js/rom-cache.js"></script>
+<script src="js/load-progress.js"></script>-->
+
+<header class="page-header">
+  <div class="breadcrumb"><a href="index.html">home</a> &middot; SEQ Studio</div>
+  <h1>SEQ Studio</h1>
+  <p class="lede">A fresh, minimal SEQ/VAB music bench built from the project documentation: load a disc, pick a BGM pair, inspect the SEQ piano roll, and play through the existing clean-room PSX audio path with selectable sample interpolation.</p>
+</header>
+
+<section class="doc-section">
+  <div class="seq-shell">
+    <aside class="seq-panel">
+      <h3>Disc</h3>
+      <div class="seq-panel-body seq-file">
+        <input type="file" id="seq-disc-file" accept=".bin">
+        <div class="seq-status" id="seq-status">No disc loaded.</div>
+      </div>
+      <h3>BGM Pairs</h3>
+      <ul class="seq-list" id="seq-pair-list"></ul>
+    </aside>
+
+    <main class="seq-main">
+      <section class="seq-panel">
+        <h3>Transport</h3>
+        <div class="seq-panel-body">
+          <div class="seq-transport">
+            <button class="seq-control" id="seq-play" disabled>Play</button>
+            <button class="seq-control" id="seq-pause" disabled>Pause</button>
+            <button class="seq-control" id="seq-stop" disabled>Stop</button>
+            <label>gain <input class="seq-control" id="seq-gain" type="range" min="1" max="60" value="25"></label>
+            <label>seek <input class="seq-control" id="seq-seek" type="range" min="0" max="1000" value="0" disabled></label>
+            <span id="seq-seek-label" class="seq-muted">0.0s</span>
+            <label>interp
+              <select class="seq-control" id="seq-interp" disabled>
+                <option value="0">Nearest</option>
+                <option value="1">Linear</option>
+                <option value="3" selected>PSX Gaussian</option>
+              </select>
+            </label>
+            <label>reverb
+              <select class="seq-control" id="seq-reverb" disabled>
+                <option value="0">Off</option>
+                <option value="1">Room</option>
+                <option value="2">Studio A</option>
+                <option value="3">Studio B</option>
+                <option value="4">Studio C</option>
+                <option value="5">Hall</option>
+                <option value="6">Space</option>
+                <option value="7">Echo</option>
+                <option value="8">Delay</option>
+                <option value="9">Pipe</option>
+              </select>
+            </label>
+            <label>route
+              <select class="seq-control" id="seq-route" disabled>
+                <option value="0" selected>Scanned Tone Send</option>
+                <option value="1">Force Send</option>
+                <option value="2">Dry Only</option>
+                <option value="3">Wet Return Only</option>
+                <option value="4">Bypass Reverb Engine</option>
+                <option value="5">Reverb Input Monitor</option>
+              </select>
+            </label>
+            <label>depth <input class="seq-control" id="seq-reverb-depth" type="range" min="0" max="200" value="140" disabled></label>
+            <span id="seq-reverb-depth-label" class="seq-muted">140%</span>
+            <label>width <input class="seq-control" id="seq-width" type="range" min="60" max="120" value="90" disabled></label>
+            <span id="seq-width-label" class="seq-muted">90%</span>
+            <label><input id="seq-lowpass" type="checkbox" checked disabled> PSX output filter</label>
+            <button class="seq-control" id="seq-render" disabled>Render 20s Waveform</button>
+            <button class="seq-control" id="seq-export-wav" disabled>Export WAV</button>
+            <button class="seq-control" id="seq-export-route-debug" disabled>Export Route Debug</button>
+            <button class="seq-control" id="seq-export-wave-png" disabled>Export Waveform PNG</button>
+            <button class="seq-control" id="seq-clear-cache" disabled>Clear Audio Cache</button>
+          </div>
+          <div class="seq-status" id="seq-playback-status">Load a BGM pair to play.</div>
+          <div class="seq-status" id="seq-engine-status">engine: idle</div>
+        </div>
+      </section>
+
+      <section class="seq-grid">
+        <div class="seq-stat"><b>PROT</b><span id="stat-prot">-</span></div>
+        <div class="seq-stat"><b>PPQN</b><span id="stat-ppqn">-</span></div>
+        <div class="seq-stat"><b>BPM</b><span id="stat-bpm">-</span></div>
+        <div class="seq-stat"><b>Notes</b><span id="stat-notes">-</span></div>
+        <div class="seq-stat"><b>Render Path</b><span id="stat-effect">-</span></div>
+        <div class="seq-stat"><b>Cache</b><span id="stat-cache">clean</span></div>
+      </section>
+
+      <section class="seq-panel">
+        <h3>Piano Roll</h3>
+        <div class="seq-panel-body">
+          <div class="roll-tools">
+            <button id="roll-zoom-out" disabled>Zoom -</button>
+            <button id="roll-zoom-in" disabled>Zoom +</button>
+            <button id="roll-zoom-reset" disabled>Reset</button>
+            <label>view <input id="roll-pan" type="range" min="0" max="1000" value="0" disabled></label>
+            <label>color
+              <select id="roll-color" disabled>
+                <option value="channel">Channel</option>
+                <option value="program">Program</option>
+              </select>
+            </label>
+            <span id="roll-zoom-label">1.0x</span>
+            <span id="roll-time" class="roll-time">1:1:000 / 0.0s</span>
+          </div>
+          <canvas class="seq-canvas" id="seq-roll" width="1800" height="700"></canvas>
+          <canvas class="seq-canvas" id="seq-waveform" width="1400" height="180"></canvas>
+          <div class="seq-status" id="seq-wave-status">Load a BGM pair to inspect the SEQ timeline.</div>
+        </div>
+      </section>
+
+      <section class="seq-panel">
+        <h3>Selected Note</h3>
+        <div class="seq-panel-body">
+          <div class="seq-inspector" id="seq-note-inspector">
+            <div><b>note</b><span>none selected</span></div>
+          </div>
+          <div class="seq-transport" style="margin-top: 12px;">
+            <button class="seq-control" id="seq-export-interp-debug" disabled>Export Interp Debug</button>
+            <button class="seq-control" id="seq-export-note-trace" disabled>Export Note Trace JSON</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</section>
+
+<script type="module">
+let wasmMod = null;
+let audio = null;
+let pairs = [];
+let selected = null;
+let selectedIndex = -1;
+let timeline = null;
+let audioContext = null;
+let activeSource = null;
+let activeGain = null;
+let activeBuffer = null;
+let playheadFrame = 0;
+let playback = null;
+let currentSeekSeconds = 0;
+let lastRenderedPcm = null;
+let lastRenderedSeconds = 0;
+let renderCache = new Map();
+let cacheStatus = "clean";
+let lastCacheReason = "initial";
+let rollZoom = 1;
+let rollStartTick = 0;
+let rollColorMode = "channel";
+let noteRects = [];
+let selectedNoteId = null;
+
+const RENDER_SECONDS = 60;
+
+const $file = document.getElementById("seq-disc-file");
+const $status = document.getElementById("seq-status");
+const $pairs = document.getElementById("seq-pair-list");
+const $play = document.getElementById("seq-play");
+const $pause = document.getElementById("seq-pause");
+const $stop = document.getElementById("seq-stop");
+const $gain = document.getElementById("seq-gain");
+const $seek = document.getElementById("seq-seek");
+const $seekLabel = document.getElementById("seq-seek-label");
+const $interp = document.getElementById("seq-interp");
+const $reverb = document.getElementById("seq-reverb");
+const $route = document.getElementById("seq-route");
+const $reverbDepth = document.getElementById("seq-reverb-depth");
+const $reverbDepthLabel = document.getElementById("seq-reverb-depth-label");
+const $width = document.getElementById("seq-width");
+const $widthLabel = document.getElementById("seq-width-label");
+const $lowpass = document.getElementById("seq-lowpass");
+const $render = document.getElementById("seq-render");
+const $exportWav = document.getElementById("seq-export-wav");
+const $exportRouteDebug = document.getElementById("seq-export-route-debug");
+const $exportWavePng = document.getElementById("seq-export-wave-png");
+const $clearCache = document.getElementById("seq-clear-cache");
+const $playbackStatus = document.getElementById("seq-playback-status");
+const $engineStatus = document.getElementById("seq-engine-status");
+const $roll = document.getElementById("seq-roll");
+const $wave = document.getElementById("seq-waveform");
+const $waveStatus = document.getElementById("seq-wave-status");
+const $zoomOut = document.getElementById("roll-zoom-out");
+const $zoomIn = document.getElementById("roll-zoom-in");
+const $zoomReset = document.getElementById("roll-zoom-reset");
+const $rollPan = document.getElementById("roll-pan");
+const $rollColor = document.getElementById("roll-color");
+const $zoomLabel = document.getElementById("roll-zoom-label");
+const $rollTime = document.getElementById("roll-time");
+const $inspector = document.getElementById("seq-note-inspector");
+const $exportInterpDebug = document.getElementById("seq-export-interp-debug");
+const $exportNoteTrace = document.getElementById("seq-export-note-trace");
+
+function setStatus(text) {
+  $status.textContent = text;
+}
+
+async function initWasm() {
+  if (!wasmMod) {
+    wasmMod = await import("./wasm/legaia_web_viewer.js");
+    await wasmMod.default();
+  }
+}
+
+async function loadDisc(file) {
+  if (!file) return;
+  try {
+    await initWasm();
+    stopPlayback();
+    setStatus("Reading disc...");
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    audio = new wasmMod.LegaiaAudio();
+    audio.load_disc(bytes);
+    pairs = JSON.parse(audio.enumerate_bgm_pairs_json());
+    selected = null;
+    selectedIndex = -1;
+    timeline = null;
+    selectedNoteId = null;
+    renderPairList();
+    setStatus(`Loaded ${pairs.length} SEQ/VAB pair(s).`);
+    if (pairs.length) selectPair(0);
+  } catch (err) {
+    console.error(err);
+    setStatus(`Load failed: ${err?.message || err}`);
+  }
+}
+
+function renderPairList() {
+  $pairs.innerHTML = "";
+  pairs.forEach((pair, idx) => {
+    const li = document.createElement("li");
+    if (idx === selectedIndex) li.classList.add("active");
+    li.innerHTML = `<span>${String(pair.prot_index).padStart(4, "0")}</span><span>BPM ${Number(pair.bpm || 0).toFixed(1)}<br><span class="seq-muted">seq 0x${pair.seq_offset.toString(16)} / vab 0x${pair.vab_offset.toString(16)}</span></span>`;
+    li.addEventListener("click", () => selectPair(idx));
+    $pairs.appendChild(li);
+  });
+}
+
+function selectPair(idx) {
+  stopPlayback();
+  selected = pairs[idx];
+  selectedIndex = idx;
+  selectedNoteId = null;
+  rollZoom = 1;
+  rollStartTick = 0;
+  currentSeekSeconds = 0;
+  renderPairList();
+
+  try {
+    timeline = JSON.parse(audio.seq_timeline_json(selected.prot_index, selected.seq_offset));
+    updateOutputLabels();
+    document.getElementById("stat-prot").textContent = String(selected.prot_index).padStart(4, "0");
+    document.getElementById("stat-ppqn").textContent = timeline.header?.ppqn ?? selected.ppqn ?? "-";
+    document.getElementById("stat-bpm").textContent = effectiveBpm().toFixed(1);
+    document.getElementById("stat-notes").textContent = `${timeline.notes?.length || 0} / ${timeline.event_count || 0} events`;
+    const autoMode = Number(selected.preview_reverb_mode || 0);
+    if (autoMode > 0) $reverb.value = String(autoMode);
+    document.getElementById("stat-effect").textContent = `doc SPU chain, ${reverbName(selectedReverb())}, ${routeName()}`;
+    setEnabled(true);
+    updateSeekFromSeconds(0, true);
+    drawRoll();
+    clearWave();
+    invalidateAudioCache("selected BGM changed");
+    setCacheStatus("dirty", "selected BGM changed");
+    updateInspector();
+    $playbackStatus.textContent = `Selected PROT ${selected.prot_index}; render path uses documented SEQ/VAB/SPU chain.`;
+    $waveStatus.textContent = "Timeline loaded. Render a waveform or press Play.";
+  } catch (err) {
+    console.error(err);
+    timeline = null;
+    setEnabled(false);
+    $waveStatus.textContent = `SEQ timeline failed: ${err?.message || err}`;
+  }
+}
+
+function setEnabled(enabled) {
+  [$play, $pause, $stop, $seek, $interp, $reverb, $route, $reverbDepth, $width, $lowpass, $render, $exportWav, $exportRouteDebug, $exportWavePng, $clearCache, $zoomOut, $zoomIn, $zoomReset, $rollPan, $rollColor]
+    .forEach((el) => { el.disabled = !enabled; });
+  updateNoteExportButtons();
+}
+
+function selectedReverb() {
+  return Number($reverb.value || 0);
+}
+
+function selectedRoute() {
+  return Number($route.value || 0);
+}
+
+function routeName(value = selectedRoute()) {
+  return ["Scanned Tone Send", "Force Send", "Dry Only", "Wet Return Only", "Bypass Reverb Engine", "Reverb Input Monitor"][Number(value || 0)] || "Scanned Tone Send";
+}
+
+function reverbName(value = selectedReverb()) {
+  return ["Off", "Room", "Studio A", "Studio B", "Studio C", "Hall", "Space", "Echo", "Delay", "Pipe"][Number(value || 0)] || "Off";
+}
+
+function selectedInterp() {
+  return Number($interp.value || 0);
+}
+
+function interpName(value = selectedInterp()) {
+  return ["Nearest", "Linear", "Unused", "PSX Gaussian"][Number(value)] || "Nearest";
+}
+
+function selectedReverbDepth() {
+  return Number($reverbDepth.value || 100);
+}
+
+function selectedWidth() {
+  return Number($width.value || 100);
+}
+
+function updateOutputLabels() {
+  $reverbDepthLabel.textContent = `${selectedReverbDepth()}%`;
+  $widthLabel.textContent = `${selectedWidth()}%`;
+}
+
+function setCacheStatus(status, reason) {
+  cacheStatus = status;
+  if (reason) lastCacheReason = reason;
+  const el = document.getElementById("stat-cache");
+  if (el) el.textContent = `${cacheStatus}; ${lastCacheReason}`;
+}
+
+function invalidateAudioCache(reason) {
+  activeBuffer = null;
+  renderCache.clear();
+  setCacheStatus("dirty", reason);
+  console.log(`render cache invalidated because: ${reason}`);
+}
+
+function clearAudioCache() {
+  stopSourceOnly();
+  activeBuffer = null;
+  lastRenderedPcm = null;
+  lastRenderedSeconds = 0;
+  renderCache.clear();
+  clearWave();
+  setCacheStatus("manually cleared", "audio cache manually cleared");
+  console.log("audio cache manually cleared");
+}
+
+function renderCacheKey(seconds) {
+  return JSON.stringify({
+    prot: selected?.prot_index,
+    vab: selected?.vab_offset,
+    seq: selected?.seq_offset,
+    seconds,
+    reverb: selectedReverb(),
+    route: selectedRoute(),
+    interp: selectedInterp(),
+    depth: selectedReverbDepth(),
+    lowpass: $lowpass.checked,
+    width: selectedWidth(),
+    sampleRate: audio?.bgm_render_rate?.() || 44100
+  });
+}
+
+function effectiveBpm() {
+  const bpm = Number(timeline?.header?.effective_bpm || selected?.bpm || 0);
+  return Number.isFinite(bpm) && bpm > 0 ? bpm : 120;
+}
+
+function ppqn() {
+  return Number(timeline?.header?.ppqn || selected?.ppqn || 480);
+}
+
+function totalTicks() {
+  return Math.max(1, Number(timeline?.total_ticks || 1));
+}
+
+function tickToSeconds(tick) {
+  return Number(tick || 0) * 60 / (effectiveBpm() * ppqn());
+}
+
+function secondsToTick(seconds) {
+  return Number(seconds || 0) * effectiveBpm() * ppqn() / 60;
+}
+
+function durationSeconds() {
+  return Math.max(1, tickToSeconds(totalTicks()));
+}
+
+function barsBeatsTicks(tick) {
+  const qn = ppqn();
+  const beatsPerBar = Number(timeline?.header?.time_sig_num || 4);
+  const barTicks = qn * beatsPerBar;
+  const bar = Math.floor(tick / barTicks) + 1;
+  const beat = Math.floor((tick % barTicks) / qn) + 1;
+  const sub = Math.floor(tick % qn);
+  return `${bar}:${beat}:${String(sub).padStart(3, "0")}`;
+}
+
+function updateSeekFromSeconds(seconds, updateSlider) {
+  currentSeekSeconds = Math.max(0, Math.min(durationSeconds(), Number(seconds || 0)));
+  if (updateSlider) {
+    const max = durationSeconds();
+    $seek.value = max > 0 ? String(Math.round(currentSeekSeconds / max * 1000)) : "0";
+  }
+  const tick = secondsToTick(currentSeekSeconds);
+  $seekLabel.textContent = `${currentSeekSeconds.toFixed(1)}s`;
+  $rollTime.textContent = `${barsBeatsTicks(tick)} / ${currentSeekSeconds.toFixed(1)}s`;
+  drawRoll();
+}
+
+function seekFromSlider() {
+  return durationSeconds() * (Number($seek.value || 0) / 1000);
+}
+
+async function ensureAudioContext() {
+  if (!audioContext) {
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioContext.state === "suspended") await audioContext.resume();
+  return audioContext;
+}
+
+function renderBgm(seconds = RENDER_SECONDS) {
+  if (!audio || !selected) return new Int16Array();
+  const key = renderCacheKey(seconds);
+  if (renderCache.has(key)) {
+    setCacheStatus("cache hit", "settings unchanged");
+    console.log("render cache hit");
+    return renderCache.get(key);
+  }
+  console.log(`render regenerated: ${seconds}s, DuckStation-shaped document SPU path, route ${routeName()}, reverb ${reverbName()} depth ${selectedReverbDepth()}%, interpolation ${interpName()}, lowpass ${$lowpass.checked}, width ${selectedWidth()}%`);
+  setCacheStatus("regenerated", "render settings changed or cache empty");
+  let pcm;
+  if (audio.render_seq_studio_doc_spu_i16_routed) {
+    pcm = audio.render_seq_studio_doc_spu_i16_routed(
+      selected.prot_index,
+      selected.vab_offset,
+      selected.seq_offset,
+      seconds,
+      selectedReverb(),
+      selectedInterp(),
+      selectedReverbDepth(),
+      $lowpass.checked,
+      selectedWidth(),
+      selectedRoute()
+    );
+  } else if (audio.render_seq_studio_doc_spu_i16) {
+    pcm = audio.render_seq_studio_doc_spu_i16(
+      selected.prot_index,
+      selected.vab_offset,
+      selected.seq_offset,
+      seconds,
+      selectedReverb(),
+      selectedInterp(),
+      selectedReverbDepth(),
+      $lowpass.checked,
+      selectedWidth()
+    );
+  } else {
+    throw new Error("fresh document-based SEQ Studio renderer is missing from the WASM bundle");
+  }
+  renderCache.set(key, pcm);
+  updateEngineProbe().catch((err) => console.warn("mix probe failed", err));
+  return pcm;
+}
+
+async function updateEngineProbe() {
+  if (!audio?.bgm_mix_probe_json || !selected) {
+    $engineStatus.textContent = `engine: backend WASM, mode ${reverbName()}, route ${routeName()}, interp ${interpName()}, cache ${cacheStatus}`;
+    return;
+  }
+  const probe = JSON.parse(audio.bgm_mix_probe_json(
+    selected.prot_index,
+    selected.vab_offset,
+    selected.seq_offset,
+    2,
+    selectedReverb(),
+    selectedRoute(),
+    selectedInterp(),
+    Math.min(100, selectedReverbDepth())
+  ));
+  const fmt = (m) => `${m?.peak_l ?? 0}/${m?.peak_r ?? 0} rms ${(m?.rms_l ?? 0).toFixed(3)}/${(m?.rms_r ?? 0).toFixed(3)}`;
+  const wetSilent = (probe.reverb_return?.peak_l || 0) === 0 && (probe.reverb_return?.peak_r || 0) === 0;
+  $engineStatus.textContent =
+    `engine: backend WASM, mixer NEW, mode ${reverbName(probe.active_reverb_mode)}, route ${routeName()}, interp ${probe.engine_interpolation || interpName()}; ` +
+    `dry ${fmt(probe.dry)}; send ${fmt(probe.reverb_input)}; wet ${fmt(probe.reverb_return)}; final ${fmt(probe.final)}${wetSilent ? "; wet return is silent" : ""}`;
+}
+
+function downloadBytes(bytes, name, type = "application/octet-stream") {
+  const blob = new Blob([bytes], { type });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(a.href);
+}
+
+function pcmToWavBytes(pcm, sampleRate) {
+  const dataBytes = pcm.length * 2;
+  const buffer = new ArrayBuffer(44 + dataBytes);
+  const view = new DataView(buffer);
+  const write = (offset, text) => {
+    for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
+  };
+  write(0, "RIFF");
+  view.setUint32(4, 36 + dataBytes, true);
+  write(8, "WAVE");
+  write(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 2, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 4, true);
+  view.setUint16(32, 4, true);
+  view.setUint16(34, 16, true);
+  write(36, "data");
+  view.setUint32(40, dataBytes, true);
+  let offset = 44;
+  for (const sample of pcm) {
+    view.setInt16(offset, sample, true);
+    offset += 2;
+  }
+  return new Uint8Array(buffer);
+}
+
+function pcmStats(pcm) {
+  const frames = Math.floor(pcm.length / 2);
+  let peakL = 0, peakR = 0, sumL = 0, sumR = 0;
+  for (let i = 0; i < frames; i++) {
+    const l = Number(pcm[i * 2] || 0);
+    const r = Number(pcm[i * 2 + 1] || 0);
+    peakL = Math.max(peakL, Math.abs(l));
+    peakR = Math.max(peakR, Math.abs(r));
+    sumL += (l / 32768) * (l / 32768);
+    sumR += (r / 32768) * (r / 32768);
+  }
+  return {
+    peak_l: peakL,
+    peak_r: peakR,
+    rms_l: frames ? Math.sqrt(sumL / frames) : 0,
+    rms_r: frames ? Math.sqrt(sumR / frames) : 0,
+    frames
+  };
+}
+
+function pcmDiffStats(a, b) {
+  const n = Math.min(a.length, b.length);
+  let maxAbs = 0;
+  let sumSq = 0;
+  for (let i = 0; i < n; i++) {
+    const d = Number(a[i] || 0) - Number(b[i] || 0);
+    maxAbs = Math.max(maxAbs, Math.abs(d));
+    sumSq += d * d;
+  }
+  const rms = n ? Math.sqrt(sumSq / n) / 32768 : 0;
+  return { samples: n, max_abs: maxAbs, rms, nearly_identical: maxAbs <= 2 || rms < 0.00002 };
+}
+
+function reportWarnings(report) {
+  const warnings = [];
+  if (report.checks?.wet_return_silent) warnings.push("wet return is silent");
+  if (report.checks?.wetness_not_affecting_final_mix) warnings.push("wetness not affecting final mix");
+  if (report.checks?.dry_only_differs_from_bypass) warnings.push("Dry Only differs from Bypass");
+  if (report.checks?.wet0_differs_from_dry) warnings.push("Full Mix wetness 0 differs from Dry Only");
+  if (report.checks?.interpolation_not_affecting_renderer) warnings.push("interpolation setting not affecting renderer");
+  return warnings;
+}
+
+function updateWarnings(report) {
+  const warnings = reportWarnings(report);
+  if (warnings.length) {
+    $engineStatus.textContent = `${$engineStatus.textContent} warnings: ${warnings.join("; ")}`;
+  }
+}
+
+function exportBaseName() {
+  const prot = selected ? String(selected.prot_index).padStart(4, "0") : "none";
+  const rev = reverbName().toLowerCase().replaceAll(" ", "-");
+  const route = routeName().toLowerCase().replaceAll(" ", "-");
+  const interp = interpName().toLowerCase().replaceAll(" ", "-");
+  const lp = $lowpass.checked ? "psx-filter" : "no-filter";
+  return `seq-studio-prot-${prot}-${rev}-${route}-${selectedReverbDepth()}pct-${interp}-${lp}-width${selectedWidth()}`;
+}
+
+function renderDiagnosticRoute(seconds, route, depthPercent) {
+  if (!audio?.render_seq_studio_doc_spu_i16_routed) {
+    throw new Error("routed diagnostic renderer is missing from the WASM bundle");
+  }
+  return audio.render_seq_studio_doc_spu_i16_routed(
+    selected.prot_index,
+    selected.vab_offset,
+    selected.seq_offset,
+    seconds,
+    selectedReverb(),
+    selectedInterp(),
+    depthPercent,
+    $lowpass.checked,
+    selectedWidth(),
+    route
+  );
+}
+
+function mixProbe(seconds, route, depthPercent) {
+  if (!audio?.bgm_mix_probe_json) return null;
+  return JSON.parse(audio.bgm_mix_probe_json(
+    selected.prot_index,
+    selected.vab_offset,
+    selected.seq_offset,
+    seconds,
+    selectedReverb(),
+    route,
+    selectedInterp(),
+    Math.min(100, depthPercent)
+  ));
+}
+
+async function exportRouteDebug() {
+  if (!selected) return;
+  const seconds = 10;
+  const sampleRate = audio.bgm_render_rate();
+  const base = `seq-studio-prot-${String(selected.prot_index).padStart(4, "0")}-route-debug-${reverbName().toLowerCase().replaceAll(" ", "-")}`;
+  const cases = [
+    { key: "bypass", label: "Bypass Reverb Engine", route: 4, depth: 100 },
+    { key: "dry-only", label: "Dry Only", route: 2, depth: 100 },
+    { key: "reverb-input-monitor", label: "Reverb Input Monitor", route: 5, depth: 100 },
+    { key: "wet-return-only", label: "Wet Return Only", route: 3, depth: 100 },
+    { key: "full-mix-wet0", label: "Full Mix wetness 0", route: 0, depth: 0 },
+    { key: "full-mix-wet100", label: "Full Mix wetness 100", route: 0, depth: 100 }
+  ];
+  $waveStatus.textContent = "Exporting 10s route debug WAVs...";
+  const rendered = {};
+  const report = {
+    prot_index: selected.prot_index,
+    duration_seconds: seconds,
+    reverb_mode: selectedReverb(),
+    reverb_mode_name: reverbName(),
+    interpolation: selectedInterp(),
+    interpolation_name: interpName(),
+    output_lowpass: $lowpass.checked,
+    stereo_width_percent: selectedWidth(),
+    cases: {},
+    diffs: {},
+    checks: {}
+  };
+  for (const c of cases) {
+    const pcm = renderDiagnosticRoute(seconds, c.route, c.depth);
+    rendered[c.key] = pcm;
+    downloadBytes(pcmToWavBytes(pcm, sampleRate), `${base}-${c.key}.wav`, "audio/wav");
+    report.cases[c.key] = {
+      label: c.label,
+      route: c.route,
+      depth_percent: c.depth,
+      output: pcmStats(pcm),
+      meters: mixProbe(seconds, c.route, c.depth)
+    };
+  }
+  report.diffs.bypass_vs_dry_only = pcmDiffStats(rendered["bypass"], rendered["dry-only"]);
+  report.diffs.dry_only_vs_full_mix_wet0 = pcmDiffStats(rendered["dry-only"], rendered["full-mix-wet0"]);
+  report.diffs.full_mix_wet0_vs_wet100 = pcmDiffStats(rendered["full-mix-wet0"], rendered["full-mix-wet100"]);
+  report.diffs.input_monitor_vs_wet_return = pcmDiffStats(rendered["reverb-input-monitor"], rendered["wet-return-only"]);
+  const wetStats = report.cases["wet-return-only"].output;
+  const inputStats = report.cases["reverb-input-monitor"].output;
+  report.checks.dry_only_differs_from_bypass = !report.diffs.bypass_vs_dry_only.nearly_identical;
+  report.checks.wet0_differs_from_dry = !report.diffs.dry_only_vs_full_mix_wet0.nearly_identical;
+  report.checks.wet_return_silent = wetStats.peak_l === 0 && wetStats.peak_r === 0;
+  report.checks.wetness_not_affecting_final_mix = !report.checks.wet_return_silent && report.diffs.full_mix_wet0_vs_wet100.nearly_identical;
+  report.checks.input_monitor_contains_wet_output = false;
+  report.checks.wet_return_only_contains_dry_mix = false;
+  report.warnings = reportWarnings(report);
+  downloadBytes(new TextEncoder().encode(JSON.stringify(report, null, 2)), `${base}-report.json`, "application/json");
+  updateWarnings(report);
+  $waveStatus.textContent = `Route debug exported. ${report.warnings.length ? `Warnings: ${report.warnings.join("; ")}` : "Checks passed."}`;
+}
+
+function pcmToAudioBuffer(ctx, pcm, sampleRate) {
+  const frames = Math.floor(pcm.length / 2);
+  const buffer = ctx.createBuffer(2, frames, sampleRate);
+  const left = buffer.getChannelData(0);
+  const right = buffer.getChannelData(1);
+  for (let i = 0; i < frames; i++) {
+    left[i] = pcm[i * 2] / 32768;
+    right[i] = pcm[i * 2 + 1] / 32768;
+  }
+  return buffer;
+}
+
+async function playFromCurrentSeek() {
+  if (!selected) return;
+  const oldText = $play.textContent;
+  $play.disabled = true;
+  $play.textContent = "Rendering...";
+  try {
+    const pcm = renderBgm(RENDER_SECONDS);
+    if (!pcm.length) throw new Error("BGM render returned no audio");
+    lastRenderedPcm = pcm;
+    lastRenderedSeconds = RENDER_SECONDS;
+    const ctx = await ensureAudioContext();
+    activeBuffer = pcmToAudioBuffer(ctx, pcm, audio.bgm_render_rate());
+    startBuffer(ctx, activeBuffer, currentSeekSeconds);
+    drawWave(pcm);
+    $waveStatus.textContent = `Rendered ${Math.round(activeBuffer.duration)}s at ${audio.bgm_render_rate()} Hz.`;
+  } catch (err) {
+    console.error(err);
+    $playbackStatus.textContent = `Playback failed: ${err?.message || err}`;
+  } finally {
+    $play.textContent = oldText;
+    $play.disabled = false;
+  }
+}
+
+function startBuffer(ctx, buffer, offsetSeconds) {
+  stopSourceOnly();
+  const src = ctx.createBufferSource();
+  const gain = ctx.createGain();
+  gain.gain.value = Number($gain.value || 25);
+  src.buffer = buffer;
+  src.connect(gain);
+  gain.connect(ctx.destination);
+  activeSource = src;
+  activeGain = gain;
+  const offset = Math.max(0, Math.min(buffer.duration - 0.01, offsetSeconds || 0));
+  playback = { startedAt: ctx.currentTime, offset, duration: buffer.duration };
+  src.onended = () => {
+    if (activeSource === src) {
+      stopSourceOnly();
+      playback = null;
+      drawRoll();
+    }
+  };
+  src.start(0, offset);
+  $pause.textContent = "Pause";
+  $playbackStatus.textContent = `Playing from ${offset.toFixed(1)}s with ${interpName()}, ${reverbName()} ${selectedReverbDepth()}%, ${routeName()}, ${$lowpass.checked ? "PSX output filter" : "no output filter"}, width ${selectedWidth()}%.`;
+  startPlayhead();
+}
+
+function stopSourceOnly() {
+  if (playheadFrame) cancelAnimationFrame(playheadFrame);
+  playheadFrame = 0;
+  if (activeSource) {
+    try { activeSource.stop(); } catch (_) {}
+    try { activeSource.disconnect(); } catch (_) {}
+  }
+  if (activeGain) {
+    try { activeGain.disconnect(); } catch (_) {}
+  }
+  activeSource = null;
+  activeGain = null;
+}
+
+function stopPlayback(resetSeek = true) {
+  stopSourceOnly();
+  playback = null;
+  if (resetSeek) updateSeekFromSeconds(0, true);
+  if ($pause) $pause.textContent = "Pause";
+}
+
+function startPlayhead() {
+  if (playheadFrame) cancelAnimationFrame(playheadFrame);
+  const step = () => {
+    if (!playback || !audioContext || !activeSource) return;
+    const elapsed = playback.offset + audioContext.currentTime - playback.startedAt;
+    updateSeekFromSeconds(elapsed, true);
+    if (elapsed < playback.duration) playheadFrame = requestAnimationFrame(step);
+  };
+  playheadFrame = requestAnimationFrame(step);
+}
+
+function rollMetrics() {
+  return { padL: 62, padR: 18, padT: 24, padB: 34 };
+}
+
+function visibleTicks() {
+  return totalTicks() / rollZoom;
+}
+
+function noteColor(note) {
+  const value = rollColorMode === "program" ? note.program : note.channel;
+  const colors = [
+    "#7cc7ff", "#ffbd6e", "#a8e879", "#ff7ab6",
+    "#b692ff", "#6ee7df", "#ffe66d", "#ff8c69",
+    "#c7f275", "#f08cff", "#91a7ff", "#a1ffd6"
+  ];
+  return colors[Math.abs(Number(value || 0)) % colors.length];
+}
+
+function drawRoll() {
+  const ctx = $roll.getContext("2d");
+  ctx.clearRect(0, 0, $roll.width, $roll.height);
+  noteRects = [];
+  ctx.fillStyle = "#080b10";
+  ctx.fillRect(0, 0, $roll.width, $roll.height);
+
+  const notes = timeline?.notes || [];
+  const { padL, padR, padT, padB } = rollMetrics();
+  const width = $roll.width - padL - padR;
+  const height = $roll.height - padT - padB;
+
+  ctx.fillStyle = "#8da1b8";
+  ctx.font = "18px var(--font-mono)";
+  if (!notes.length) {
+    ctx.fillText("Load a SEQ/VAB pair to draw the piano roll.", padL, padT + 40);
+    return;
+  }
+
+  const minKey = Math.max(0, Math.min(...notes.map((n) => n.key)) - 3);
+  const maxKey = Math.min(127, Math.max(...notes.map((n) => n.key)) + 3);
+  const keySpan = Math.max(1, maxKey - minKey + 1);
+  const viewStart = rollStartTick;
+  const viewEnd = viewStart + visibleTicks();
+
+  ctx.strokeStyle = "#17202b";
+  ctx.lineWidth = 1;
+  for (let key = minKey; key <= maxKey; key++) {
+    const y = padT + (maxKey - key) / keySpan * height;
+    if (key % 12 === 0) {
+      ctx.strokeStyle = "#243244";
+      ctx.beginPath();
+      ctx.moveTo(padL, y);
+      ctx.lineTo($roll.width - padR, y);
+      ctx.stroke();
+      ctx.fillStyle = "#5f748b";
+      ctx.font = "12px var(--font-mono)";
+      ctx.fillText(noteName(key), 8, y + 4);
+    } else {
+      ctx.strokeStyle = "#111923";
+      ctx.beginPath();
+      ctx.moveTo(padL, y);
+      ctx.lineTo($roll.width - padR, y);
+      ctx.stroke();
+    }
+  }
+
+  const gridStep = ppqn();
+  const firstGrid = Math.floor(viewStart / gridStep) * gridStep;
+  ctx.font = "12px var(--font-mono)";
+  for (let tick = firstGrid; tick <= viewEnd; tick += gridStep) {
+    const x = padL + (tick - viewStart) / (viewEnd - viewStart) * width;
+    ctx.strokeStyle = tick % (gridStep * 4) === 0 ? "#2a3a4d" : "#182333";
+    ctx.beginPath();
+    ctx.moveTo(x, padT);
+    ctx.lineTo(x, $roll.height - padB);
+    ctx.stroke();
+    if (tick % (gridStep * 4) === 0) {
+      ctx.fillStyle = "#60758d";
+      ctx.fillText(barsBeatsTicks(tick), x + 4, 16);
+    }
+  }
+
+  for (const note of notes) {
+    if (note.end < viewStart || note.start > viewEnd) continue;
+    const x = padL + (note.start - viewStart) / (viewEnd - viewStart) * width;
+    const x2 = padL + (note.end - viewStart) / (viewEnd - viewStart) * width;
+    const y = padT + (maxKey - note.key) / keySpan * height;
+    const h = Math.max(5, height / keySpan * 0.72);
+    const w = Math.max(2, x2 - x);
+    ctx.fillStyle = noteColor(note);
+    ctx.globalAlpha = note.id === selectedNoteId ? 1 : 0.78;
+    ctx.fillRect(x, y - h / 2, w, h);
+    ctx.globalAlpha = 1;
+    if (note.id === selectedNoteId) {
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x - 1, y - h / 2 - 1, w + 2, h + 2);
+    }
+    noteRects.push({ x, y: y - h / 2, w, h, note });
+  }
+
+  const playTick = secondsToTick(currentSeekSeconds);
+  if (playTick >= viewStart && playTick <= viewEnd) {
+    const x = padL + (playTick - viewStart) / (viewEnd - viewStart) * width;
+    ctx.strokeStyle = "#ffef7a";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x, padT);
+    ctx.lineTo(x, $roll.height - padB);
+    ctx.stroke();
+  }
+
+  ctx.strokeStyle = "#38475a";
+  ctx.strokeRect(padL, padT, width, height);
+  $zoomLabel.textContent = `${rollZoom.toFixed(1)}x`;
+
+  const maxStart = Math.max(0, totalTicks() - visibleTicks());
+  $rollPan.value = maxStart > 0 ? String(Math.round(rollStartTick / maxStart * 1000)) : "0";
+}
+
+function noteName(key) {
+  const names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+  return `${names[key % 12]}${Math.floor(key / 12) - 1}`;
+}
+
+function rollPoint(ev) {
+  const rect = $roll.getBoundingClientRect();
+  return {
+    x: (ev.clientX - rect.left) * ($roll.width / rect.width),
+    y: (ev.clientY - rect.top) * ($roll.height / rect.height),
+  };
+}
+
+function hitNote(pt) {
+  for (let i = noteRects.length - 1; i >= 0; i--) {
+    const r = noteRects[i];
+    if (pt.x >= r.x && pt.x <= r.x + r.w && pt.y >= r.y && pt.y <= r.y + r.h) return r.note;
+  }
+  return null;
+}
+
+function updateInspector() {
+  const note = (timeline?.notes || []).find((n) => n.id === selectedNoteId);
+  if (!note) {
+    $inspector.innerHTML = "<div><b>note</b><span>none selected</span></div>";
+    updateNoteExportButtons();
+    return;
+  }
+  const values = [
+    ["note", `${noteName(note.key)} (${note.key})`],
+    ["channel", note.channel],
+    ["velocity", note.velocity],
+    ["raw program", note.program],
+    ["MIDI display", Number(note.program || 0) + 1],
+    ["start", `${barsBeatsTicks(note.start)} / ${tickToSeconds(note.start).toFixed(3)}s`],
+    ["duration", `${note.duration} ticks / ${tickToSeconds(note.duration).toFixed(3)}s`],
+  ];
+  $inspector.innerHTML = values.map(([k, v]) => `<div><b>${k}</b><span>${v ?? "unknown"}</span></div>`).join("");
+  updateNoteExportButtons();
+}
+
+function selectedNote() {
+  return (timeline?.notes || []).find((n) => n.id === selectedNoteId) || null;
+}
+
+function updateNoteExportButtons() {
+  const enabled = !!selected && !!selectedNote();
+  if ($exportInterpDebug) $exportInterpDebug.disabled = !enabled;
+  if ($exportNoteTrace) $exportNoteTrace.disabled = !enabled;
+}
+
+function noteTraceJson(noteId = selectedNoteId, interpolation = selectedInterp()) {
+  if (!audio?.seq_note_voice_json || !selected || !noteId) {
+    return { error: "no selected note" };
+  }
+  const trace = JSON.parse(audio.seq_note_voice_json(
+    selected.prot_index,
+    selected.vab_offset,
+    selected.seq_offset,
+    noteId
+  ));
+  trace.interpolation_mode_used = interpName(interpolation);
+  trace.interpolation = interpolation;
+  trace.tone_index = trace.vab_tone ?? null;
+  trace.vag_index = trace.sample_index ?? null;
+  trace.center_note = trace.tone_center ?? null;
+  trace.fine = trace.tone_fine_shift ?? null;
+  trace.pitch = trace.pitch_register ?? null;
+  trace.adsr = {
+    adsr1: trace.adsr1 ?? null,
+    adsr2: trace.adsr2 ?? null,
+    decoded: trace.adsr_decoded ?? null
+  };
+  trace.reverb_send = trace.tone_reverb_send ?? null;
+  trace.loop_metadata = {
+    sample_loop: trace.sample_loop ?? null,
+    note: "loop metadata is unknown unless VAB/VAG parser exposes loop flags for this sample"
+  };
+  return trace;
+}
+
+function renderSelectedNote(interpolation) {
+  const note = selectedNote();
+  if (!audio?.render_note_audition_i16 || !note) {
+    throw new Error("select a piano-roll note first");
+  }
+  return audio.render_note_audition_i16(
+    selected.prot_index,
+    selected.vab_offset,
+    selected.seq_offset,
+    selectedNoteId,
+    5,
+    selectedReverb(),
+    interpolation,
+    0,
+    Math.max(2, Math.min(8, tickToSeconds(note.duration || ppqn())))
+  );
+}
+
+async function exportInterpolationDebug() {
+  const note = selectedNote();
+  if (!note) return;
+  const sampleRate = audio.bgm_render_rate();
+  const base = `seq-studio-prot-${String(selected.prot_index).padStart(4, "0")}-note-${note.id}-${noteName(note.key).replace("#", "s")}-interp-debug`;
+  const modes = [
+    { key: "nearest", label: "Nearest", value: 0 },
+    { key: "linear", label: "Linear", value: 1 },
+    { key: "gaussian", label: "PSX Gaussian", value: 3 }
+  ];
+  const rendered = {};
+  const report = {
+    prot_index: selected.prot_index,
+    selected_note_id: note.id,
+    selected_note: note,
+    voice_trace: noteTraceJson(note.id, selectedInterp()),
+    cases: {},
+    diffs: {},
+    checks: {}
+  };
+  $waveStatus.textContent = "Exporting selected-note interpolation comparison...";
+  for (const m of modes) {
+    const pcm = renderSelectedNote(m.value);
+    rendered[m.key] = pcm;
+    downloadBytes(pcmToWavBytes(pcm, sampleRate), `${base}-${m.key}.wav`, "audio/wav");
+    report.cases[m.key] = {
+      interpolation: m.value,
+      interpolation_name: m.label,
+      output: pcmStats(pcm),
+      voice_trace: noteTraceJson(note.id, m.value)
+    };
+  }
+  report.diffs.nearest_vs_linear = pcmDiffStats(rendered.nearest, rendered.linear);
+  report.diffs.linear_vs_gaussian = pcmDiffStats(rendered.linear, rendered.gaussian);
+  report.diffs.nearest_vs_gaussian = pcmDiffStats(rendered.nearest, rendered.gaussian);
+  report.checks.interpolation_not_affecting_renderer =
+    report.diffs.nearest_vs_linear.nearly_identical &&
+    report.diffs.linear_vs_gaussian.nearly_identical &&
+    report.diffs.nearest_vs_gaussian.nearly_identical;
+  if (report.checks.interpolation_not_affecting_renderer) {
+    report.message = "Interpolation setting is not affecting active renderer.";
+  }
+  report.warnings = reportWarnings(report);
+  downloadBytes(new TextEncoder().encode(JSON.stringify(report, null, 2)), `${base}-report.json`, "application/json");
+  updateWarnings(report);
+  $waveStatus.textContent = `Interpolation debug exported. ${report.warnings.length ? `Warnings: ${report.warnings.join("; ")}` : "Outputs differ numerically."}`;
+}
+
+function exportSelectedNoteTrace() {
+  const note = selectedNote();
+  if (!note) return;
+  const report = noteTraceJson(note.id, selectedInterp());
+  const base = `seq-studio-prot-${String(selected.prot_index).padStart(4, "0")}-note-${note.id}-${noteName(note.key).replace("#", "s")}-voice-trace`;
+  downloadBytes(new TextEncoder().encode(JSON.stringify(report, null, 2)), `${base}.json`, "application/json");
+  $waveStatus.textContent = "Selected-note voice trace exported.";
+}
+
+function clearWave() {
+  const ctx = $wave.getContext("2d");
+  ctx.clearRect(0, 0, $wave.width, $wave.height);
+  ctx.fillStyle = "#080b10";
+  ctx.fillRect(0, 0, $wave.width, $wave.height);
+  ctx.strokeStyle = "#263346";
+  ctx.beginPath();
+  ctx.moveTo(0, $wave.height / 2);
+  ctx.lineTo($wave.width, $wave.height / 2);
+  ctx.stroke();
+}
+
+function drawWave(pcm) {
+  clearWave();
+  const ctx = $wave.getContext("2d");
+  const mid = $wave.height / 2;
+  const step = Math.max(2, Math.floor(pcm.length / $wave.width));
+  ctx.strokeStyle = "#7cc7ff";
+  ctx.beginPath();
+  for (let x = 0; x < $wave.width; x++) {
+    let min = 0;
+    let max = 0;
+    const start = x * step;
+    for (let i = 0; i < step && start + i < pcm.length; i += 2) {
+      const v = pcm[start + i] / 32768;
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+    ctx.moveTo(x, mid + min * mid * 0.92);
+    ctx.lineTo(x, mid + max * mid * 0.92);
+  }
+  ctx.stroke();
+}
+
+$file.addEventListener("change", () => loadDisc($file.files[0]));
+if (window.RomCache) RomCache.attach($file, { onLoad: loadDisc });
+
+$play.addEventListener("click", playFromCurrentSeek);
+$pause.addEventListener("click", async () => {
+  if (!audioContext) return;
+  if (audioContext.state === "running") {
+    await audioContext.suspend();
+    $pause.textContent = "Resume";
+    $playbackStatus.textContent = "Paused.";
+  } else {
+    await audioContext.resume();
+    $pause.textContent = "Pause";
+    $playbackStatus.textContent = "Resumed.";
+  }
+});
+$stop.addEventListener("click", () => {
+  stopPlayback(true);
+  $playbackStatus.textContent = "Stopped.";
+});
+$gain.addEventListener("input", () => {
+  invalidateAudioCache("gain changed");
+  if (activeGain) activeGain.gain.value = Number($gain.value || 25);
+});
+$seek.addEventListener("input", () => updateSeekFromSeconds(seekFromSlider(), false));
+$seek.addEventListener("change", async () => {
+  updateSeekFromSeconds(seekFromSlider(), false);
+  if (activeBuffer && activeSource) {
+    const wasSuspended = audioContext?.state === "suspended";
+    const ctx = await ensureAudioContext();
+    startBuffer(ctx, activeBuffer, currentSeekSeconds);
+    if (wasSuspended) await ctx.suspend();
+  }
+});
+$interp.addEventListener("change", () => {
+  invalidateAudioCache("interpolation mode changed");
+  $waveStatus.textContent = `Interpolation set to ${interpName()}. Next playback/render will regenerate audio.`;
+});
+$reverb.addEventListener("change", () => {
+  invalidateAudioCache("reverb mode changed");
+  document.getElementById("stat-effect").textContent = `doc SPU chain, ${reverbName()}, ${routeName()}`;
+  $waveStatus.textContent = `Reverb set to ${reverbName()}. Next playback/render will regenerate audio.`;
+});
+$route.addEventListener("change", () => {
+  invalidateAudioCache("route changed");
+  document.getElementById("stat-effect").textContent = `doc SPU chain, ${reverbName()}, ${routeName()}`;
+  $waveStatus.textContent = `Route set to ${routeName()}. Next playback/render will regenerate audio.`;
+});
+[$reverbDepth, $width, $lowpass].forEach((el) => {
+  el.addEventListener("input", () => {
+    invalidateAudioCache(el === $reverbDepth ? "wetness changed" : el === $width ? "stereo width changed" : "output lowpass changed");
+    updateOutputLabels();
+    $waveStatus.textContent = "Output shaping changed. Next playback/render will regenerate audio.";
+  });
+  el.addEventListener("change", () => {
+    invalidateAudioCache(el === $reverbDepth ? "wetness changed" : el === $width ? "stereo width changed" : "output lowpass changed");
+    updateOutputLabels();
+    $waveStatus.textContent = "Output shaping changed. Next playback/render will regenerate audio.";
+  });
+});
+$clearCache.addEventListener("click", clearAudioCache);
+$exportRouteDebug.addEventListener("click", () => {
+  try {
+    exportRouteDebug();
+  } catch (err) {
+    console.error(err);
+    $waveStatus.textContent = `Route debug export failed: ${err?.message || err}`;
+  }
+});
+$exportInterpDebug.addEventListener("click", () => {
+  try {
+    exportInterpolationDebug();
+  } catch (err) {
+    console.error(err);
+    $waveStatus.textContent = `Interpolation debug export failed: ${err?.message || err}`;
+  }
+});
+$exportNoteTrace.addEventListener("click", () => {
+  try {
+    exportSelectedNoteTrace();
+  } catch (err) {
+    console.error(err);
+    $waveStatus.textContent = `Voice trace export failed: ${err?.message || err}`;
+  }
+});
+$render.addEventListener("click", () => {
+  if (!selected) return;
+  $waveStatus.textContent = "Rendering 20 seconds...";
+  setTimeout(() => {
+    try {
+      const pcm = renderBgm(20);
+      lastRenderedPcm = pcm;
+      lastRenderedSeconds = 20;
+      drawWave(pcm);
+      $waveStatus.textContent = `Rendered 20s waveform with ${interpName()} interpolation.`;
+    } catch (err) {
+      console.error(err);
+      $waveStatus.textContent = `Render failed: ${err?.message || err}`;
+    }
+  }, 20);
+});
+$zoomIn.addEventListener("click", () => {
+  rollZoom = Math.min(32, rollZoom * 1.5);
+  drawRoll();
+});
+$zoomOut.addEventListener("click", () => {
+  rollZoom = Math.max(1, rollZoom / 1.5);
+  rollStartTick = Math.min(rollStartTick, Math.max(0, totalTicks() - visibleTicks()));
+  drawRoll();
+});
+$zoomReset.addEventListener("click", () => {
+  rollZoom = 1;
+  rollStartTick = 0;
+  drawRoll();
+});
+$rollPan.addEventListener("input", () => {
+  const maxStart = Math.max(0, totalTicks() - visibleTicks());
+  rollStartTick = maxStart * (Number($rollPan.value || 0) / 1000);
+  drawRoll();
+});
+$rollColor.addEventListener("change", () => {
+  rollColorMode = $rollColor.value;
+  drawRoll();
+});
+$roll.addEventListener("mousedown", (ev) => {
+  const pt = rollPoint(ev);
+  const note = hitNote(pt);
+  if (note) {
+    selectedNoteId = note.id;
+    updateInspector();
+    drawRoll();
+    return;
+  }
+  const { padL, padR, padT, padB } = rollMetrics();
+  if (timeline && pt.x >= padL && pt.x <= $roll.width - padR && pt.y >= padT && pt.y <= $roll.height - padB) {
+    const tick = rollStartTick + ((pt.x - padL) / ($roll.width - padL - padR)) * visibleTicks();
+    updateSeekFromSeconds(tickToSeconds(tick), true);
+  }
+});
+$exportWav.addEventListener("click", () => {
+  if (!selected) return;
+  const pcm = lastRenderedPcm || renderBgm(20);
+  lastRenderedPcm = pcm;
+  lastRenderedSeconds = lastRenderedSeconds || 20;
+  downloadBytes(
+    pcmToWavBytes(pcm, audio.bgm_render_rate()),
+    `${exportBaseName()}-${lastRenderedSeconds || 20}s.wav`,
+    "audio/wav"
+  );
+});
+$exportWavePng.addEventListener("click", () => {
+  if (!selected) return;
+  const a = document.createElement("a");
+  a.href = $wave.toDataURL("image/png");
+  a.download = `${exportBaseName()}-waveform.png`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+});
+$roll.addEventListener("mousemove", (ev) => {
+  $roll.style.cursor = hitNote(rollPoint(ev)) ? "pointer" : "default";
+});
+
+clearWave();
+drawRoll();
+</script>

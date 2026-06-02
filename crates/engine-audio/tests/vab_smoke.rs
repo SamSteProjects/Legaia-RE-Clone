@@ -109,18 +109,18 @@ fn synth_vab_pitches_correctly_for_octave_step() {
     let mut alloc = SpuAllocator::new(0x1000, 0x10_0000);
     let bank = VabBank::upload(&mut spu, &mut alloc, &report, &blob);
 
-    // Note 60 at center -> base pitch = 0x800.
+    // Note 60 at center -> SPU unity pitch = 0x1000.
     bank.play_note(&mut spu, 0, 0, 60, 100);
     let p_center = spu.voices[0].pitch;
     spu.voices[0].adsr.phase = legaia_engine_audio::Phase::Off; // reset for next test
 
-    // Note 72 (one octave up) -> pitch should be 2× base = 0x1000.
+    // Note 72 (one octave up) -> pitch should be 2x base = 0x2000.
     bank.play_note(&mut spu, 0, 0, 72, 100);
     let p_octave = spu.voices[0].pitch;
 
-    assert_eq!(p_center, 0x800);
+    assert_eq!(p_center, 0x1000);
     assert!(
-        (p_octave as i32 - 0x1000).abs() < 4,
-        "octave-up pitch {p_octave:#x} should be ~0x1000"
+        (p_octave as i32 - 0x2000).abs() < 4,
+        "octave-up pitch {p_octave:#x} should be ~0x2000"
     );
 }

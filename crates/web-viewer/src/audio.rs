@@ -2,7 +2,7 @@
 //!
 //! Three families:
 //!   1. VAB sound banks - scan every PROT entry for the `pBAV` magic, parse
-//!      the bank, expose per-sample decode (single-shot VAG → 22 050 Hz mono PCM).
+//!      the bank, expose per-sample decode (single-shot VAG → 44 100 Hz mono PCM).
 //!   2. BGM pairs - entries that contain both `pBAV` (VAB) and `pQES` (SEQ).
 //!      Consumed by the WebAudio BGM player (`LegaiaAudio::start_bgm`).
 //!   3. XA streams - ISO9660 walks the disc for `*.STR` / `*.XA` files, demuxes
@@ -13,6 +13,7 @@
 //! lives in [`crate::LegaiaAudio`].
 
 use crate::disc::{EntryMeta, FileEntry, parse_prot_toc, read_raw_sector, walk_iso_files};
+use legaia_seq::{ChannelMessage, EventBody, MetaMessage, Seq};
 use legaia_vab::{VabReport, find_vabs, parse as parse_vab};
 use legaia_xa::demux::{
     AUDIO_BYTES_PER_SECTOR, SUBHEADER_OFFSET, USER_DATA_OFFSET, parse_subheader,
@@ -20,9 +21,9 @@ use legaia_xa::demux::{
 use legaia_xa::{Channels, DecodeOptions, decode};
 
 /// Default playback rate for decoded VAG samples. The Sony VAG header carries
-/// no per-sample rate; the engine and the WAV exporter both use 22 050 Hz
-/// across the corpus (see `crates/engine-audio/src/vab_bind.rs::VAB_SAMPLE_RATE`).
-pub const VAB_SAMPLE_RATE: u32 = 22_050;
+/// no per-sample rate; standalone audition uses the SPU unity-pitch rate
+/// (see `crates/engine-audio/src/vab_bind.rs::VAB_SAMPLE_RATE`).
+pub const VAB_SAMPLE_RATE: u32 = legaia_engine_audio::vab_bind::VAB_SAMPLE_RATE;
 
 /// One VAB bank's high-level metadata. Returned as part of [`enumerate_vabs`].
 #[derive(Debug, Clone)]
@@ -74,6 +75,28 @@ pub struct BgmPair {
     pub sample_count: u32,
     pub ppqn: u32,
     pub bpm: f32,
+    pub vab_master_vol: u8,
+    pub vab_pan: u8,
+    pub vab_attr1: u8,
+    pub vab_attr2: u8,
+    pub program_mode_mask: u8,
+    pub program_attr_mask: u16,
+    pub tone_mode_mask: u8,
+    pub tone_nonzero_mode_count: u32,
+    pub effect_source: &'static str,
+    pub preview_reverb_mode: u8,
+    pub preview_reverb_send: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BgmEffectScan {
+    pub program_mode_mask: u8,
+    pub program_attr_mask: u16,
+    pub tone_mode_mask: u8,
+    pub tone_nonzero_mode_count: u32,
+    pub effect_source: &'static str,
+    pub preview_reverb_mode: u8,
+    pub preview_reverb_send: bool,
 }
 
 /// Enumerate every PROT entry that contains both a parseable VAB and a SEQ
@@ -97,9 +120,11 @@ pub fn enumerate_bgm_pairs(disc: &[u8], entries: &[EntryMeta]) -> Vec<BgmPair> {
         let Ok(report) = parse_vab(buf, vab_off) else {
             continue;
         };
-        let Ok(hdr) = legaia_seq::parse_header(&buf[seq_off..]) else {
+        let Ok(seq) = Seq::parse(&buf[seq_off..]) else {
             continue;
         };
+        let hdr = seq.header;
+        let effect = scan_bgm_effect_hints(&report, &seq);
         out.push(BgmPair {
             prot_index: e.index,
             vab_offset: vab_off as u32,
@@ -107,10 +132,117 @@ pub fn enumerate_bgm_pairs(disc: &[u8], entries: &[EntryMeta]) -> Vec<BgmPair> {
             program_count: report.programs.len() as u32,
             sample_count: report.vag_samples.len() as u32,
             ppqn: hdr.ppqn as u32,
-            bpm: hdr.bpm(),
+            bpm: effective_bpm(&seq),
+            vab_master_vol: report.header.mvol,
+            vab_pan: report.header.pan,
+            vab_attr1: report.header.attr1,
+            vab_attr2: report.header.attr2,
+            program_mode_mask: effect.program_mode_mask,
+            program_attr_mask: effect.program_attr_mask,
+            tone_mode_mask: effect.tone_mode_mask,
+            tone_nonzero_mode_count: effect.tone_nonzero_mode_count,
+            effect_source: effect.effect_source,
+            preview_reverb_mode: effect.preview_reverb_mode,
+            preview_reverb_send: effect.preview_reverb_send,
         });
     }
     out
+}
+
+pub fn scan_bgm_effect_hints(report: &VabReport, seq: &Seq) -> BgmEffectScan {
+    let mut used_programs = [false; 128];
+    let mut any_program_change = false;
+    for ev in &seq.events {
+        if let EventBody::Channel {
+            message: ChannelMessage::ProgramChange { program },
+            ..
+        } = ev.body
+        {
+            let idx = program as usize;
+            if idx < used_programs.len() {
+                used_programs[idx] = true;
+                any_program_change = true;
+            }
+        }
+    }
+
+    let program_is_used = |idx: usize| !any_program_change || used_programs[idx];
+    let program_mode_mask = report
+        .programs
+        .iter()
+        .enumerate()
+        .filter(|(idx, p)| program_is_used(*idx) && p.tones > 0)
+        .fold(0u8, |mask, (_, p)| mask | p.mode);
+    let program_attr_mask = report
+        .programs
+        .iter()
+        .enumerate()
+        .filter(|(idx, p)| program_is_used(*idx) && p.tones > 0)
+        .fold(0u16, |mask, (_, p)| mask | p.attr);
+
+    let mut tone_mode_mask = 0u8;
+    let mut tone_nonzero_mode_count = 0u32;
+    for tone in report
+        .tones
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| program_is_used(*idx))
+        .map(|(_, row)| row)
+        .flat_map(|row| row.iter())
+        .filter(|tone| tone.vag > 0 && tone.vol > 0)
+    {
+        tone_mode_mask |= tone.mode;
+        if tone.mode != 0 {
+            tone_nonzero_mode_count += 1;
+        }
+    }
+
+    // Retail scene/setup code configures the real SPU reverb mode outside
+    // the SEQ bytes. Until that setup table is decoded, use VAB metadata as
+    // a scanner hint and choose a wet preview only for music banks. The raw
+    // masks are surfaced so tooling can correlate them against emulator SPU
+    // traces later.
+    let tone_reverb_hint =
+        tone_mode_mask & legaia_engine_audio::vab_bind::TONE_MODE_REVERB_SEND != 0;
+    let has_mode_hint = program_mode_mask != 0 || tone_mode_mask != 0 || program_attr_mask != 0;
+    let preview_reverb_send = tone_reverb_hint || !has_mode_hint;
+    BgmEffectScan {
+        program_mode_mask,
+        program_attr_mask,
+        tone_mode_mask,
+        tone_nonzero_mode_count,
+        effect_source: if tone_reverb_hint {
+            "vab-tone-mode-0x04"
+        } else if has_mode_hint {
+            "vab-mode-mask"
+        } else {
+            "bgm-preview-default"
+        },
+        // Tone mode bit 0x04 appears to mean "route this tone to the SPU
+        // reverb send". Use a short room for preview: the current clean-room
+        // reverb is a simple delay network, and longer Hall/Echo presets can
+        // sound like audible repeats instead of the smoother retail SPU tail.
+        preview_reverb_mode: if preview_reverb_send { 1 } else { 0 }, // Room / Off
+        preview_reverb_send,
+    }
+}
+
+fn effective_bpm(seq: &Seq) -> f32 {
+    let tempo = seq
+        .events
+        .iter()
+        .find_map(|e| match e.body {
+            EventBody::Meta(MetaMessage::SetTempo { us_per_qn }) if us_per_qn > 0 => {
+                Some(us_per_qn)
+            }
+            _ => None,
+        })
+        .unwrap_or(seq.header.tempo_us_per_qn);
+    if tempo == 0 {
+        0.0
+    } else {
+        60_000_000.0 / tempo as f32
+    }
 }
 
 /// Parse a single VAB at a known PROT entry + intra-entry offset. Useful when
@@ -125,9 +257,10 @@ pub fn parse_vab_at(
     let e = entries.iter().find(|x| x.index == prot_index)?;
     let buf = entry_buf(disc, e)?;
     let report = parse_vab(buf, vab_offset as usize).ok()?;
-    // Hand back the bank body sliced from the VAB header onward, so the
-    // sample-decode path can resolve `VagSampleSpan::byte_offset` against it.
-    let bank_buf = buf[vab_offset as usize..].to_vec();
+    // Hand back the full entry buffer because `VagSampleSpan::byte_offset`
+    // is reported in the same coordinate space as the buffer passed to
+    // `legaia_vab::parse`.
+    let bank_buf = buf.to_vec();
     Some((report, bank_buf))
 }
 
@@ -150,6 +283,33 @@ pub fn decode_vag_sample(
         return None;
     }
     legaia_vab::decode_vag(body).ok()
+}
+
+/// Decode a VAG sample when the caller already has the entry-local bytes and
+/// parsed VAB report. Used by SEQ Studio's note-level audition ladder.
+pub fn decode_vag_sample_from_report(
+    entry_buf: &[u8],
+    report: &VabReport,
+    sample_idx: u32,
+) -> Option<Vec<i16>> {
+    let span = report.vag_samples.get(sample_idx as usize)?;
+    let body = sample_body(entry_buf, report, span)?;
+    if body.is_empty() {
+        return None;
+    }
+    legaia_vab::decode_vag(body).ok()
+}
+
+fn sample_body<'a>(
+    buf: &'a [u8],
+    report: &VabReport,
+    span: &legaia_vab::VagSampleSpan,
+) -> Option<&'a [u8]> {
+    buf.get(span.byte_offset..span.byte_offset.checked_add(span.size)?)
+        .or_else(|| {
+            let rel = span.byte_offset.checked_sub(report.header_offset)?;
+            buf.get(rel..rel.checked_add(span.size)?)
+        })
 }
 
 /// One XA audio file on the disc (`*.STR`, `*.XA`). MV*.STR carry video too;

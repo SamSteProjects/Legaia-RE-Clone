@@ -31,6 +31,31 @@ export class LegaiaAudio {
         return ret >>> 0;
     }
     /**
+     * Render a short diagnostic pass and return dry/send/wet/final peak/RMS
+     * values as JSON. This is for SEQ Studio reverb debugging.
+     * @param {number} prot_index
+     * @param {number} vab_offset
+     * @param {number} seq_offset
+     * @param {number} duration_seconds
+     * @param {number} reverb_mode
+     * @param {number} reverb_route
+     * @param {number} interpolation
+     * @param {number} wet_percent
+     * @returns {string}
+     */
+    bgm_mix_probe_json(prot_index, vab_offset, seq_offset, duration_seconds, reverb_mode, reverb_route, interpolation, wet_percent) {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.legaiaaudio_bgm_mix_probe_json(this.__wbg_ptr, prot_index, vab_offset, seq_offset, duration_seconds, reverb_mode, reverb_route, interpolation, wet_percent);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
      * Sample rate produced by [`Self::render_bgm_pcm_i16`] (the SPU's
      * internal 44.1 kHz). Surfaced so the JS side can build a correct
      * WAV header for `decodeAudioData`.
@@ -70,7 +95,7 @@ export class LegaiaAudio {
     }
     /**
      * JSON list of every BGM pair (`pBAV` + `pQES` in the same PROT entry).
-     * Shape: `[{ prot_index, vab_offset, seq_offset, program_count, sample_count, ppqn, bpm }, ...]`.
+     * Shape: `[{ prot_index, vab_offset, seq_offset, program_count, sample_count, ppqn, bpm, ...effect hints }, ...]`.
      * @returns {string}
      */
     enumerate_bgm_pairs_json() {
@@ -162,6 +187,158 @@ export class LegaiaAudio {
         return v1;
     }
     /**
+     * Render BGM PCM with an explicit preview effect override. This is for
+     * SEQ Studio auditioning while the real retail reverb setup tables are
+     * still being mapped.
+     * @param {number} prot_index
+     * @param {number} vab_offset
+     * @param {number} seq_offset
+     * @param {number} duration_seconds
+     * @param {number} reverb_mode
+     * @param {boolean} reverb_send
+     * @returns {Int16Array}
+     */
+    render_bgm_pcm_i16_with_effect(prot_index, vab_offset, seq_offset, duration_seconds, reverb_mode, reverb_send) {
+        const ret = wasm.legaiaaudio_render_bgm_pcm_i16_with_effect(this.__wbg_ptr, prot_index, vab_offset, seq_offset, duration_seconds, reverb_mode, reverb_send);
+        var v1 = getArrayI16FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 2, 2);
+        return v1;
+    }
+    /**
+     * Render BGM PCM with explicit reverb mode and routing overrides.
+     *
+     * `reverb_route`: 0 = VAB tone flags, 1 = force all voices into reverb,
+     * 2 = force all voices dry, 3 = VAB tone flags but output wet return only.
+     * @param {number} prot_index
+     * @param {number} vab_offset
+     * @param {number} seq_offset
+     * @param {number} duration_seconds
+     * @param {number} reverb_mode
+     * @param {number} reverb_route
+     * @returns {Int16Array}
+     */
+    render_bgm_pcm_i16_with_effect_route(prot_index, vab_offset, seq_offset, duration_seconds, reverb_mode, reverb_route) {
+        const ret = wasm.legaiaaudio_render_bgm_pcm_i16_with_effect_route(this.__wbg_ptr, prot_index, vab_offset, seq_offset, duration_seconds, reverb_mode, reverb_route);
+        var v1 = getArrayI16FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 2, 2);
+        return v1;
+    }
+    /**
+     * Render BGM PCM with explicit reverb routing and voice interpolation.
+     * `interpolation`: 0 nearest, 1 linear, 3 PSX Gaussian.
+     * @param {number} prot_index
+     * @param {number} vab_offset
+     * @param {number} seq_offset
+     * @param {number} duration_seconds
+     * @param {number} reverb_mode
+     * @param {number} reverb_route
+     * @param {number} interpolation
+     * @returns {Int16Array}
+     */
+    render_bgm_pcm_i16_with_effect_route_interp(prot_index, vab_offset, seq_offset, duration_seconds, reverb_mode, reverb_route, interpolation) {
+        const ret = wasm.legaiaaudio_render_bgm_pcm_i16_with_effect_route_interp(this.__wbg_ptr, prot_index, vab_offset, seq_offset, duration_seconds, reverb_mode, reverb_route, interpolation);
+        var v1 = getArrayI16FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 2, 2);
+        return v1;
+    }
+    /**
+     * Render BGM PCM with explicit reverb routing, voice interpolation, and
+     * wet-return trim. `wet_percent` is clamped to 0..=100.
+     * @param {number} prot_index
+     * @param {number} vab_offset
+     * @param {number} seq_offset
+     * @param {number} duration_seconds
+     * @param {number} reverb_mode
+     * @param {number} reverb_route
+     * @param {number} interpolation
+     * @param {number} wet_percent
+     * @returns {Int16Array}
+     */
+    render_bgm_pcm_i16_with_effect_route_interp_wet(prot_index, vab_offset, seq_offset, duration_seconds, reverb_mode, reverb_route, interpolation, wet_percent) {
+        const ret = wasm.legaiaaudio_render_bgm_pcm_i16_with_effect_route_interp_wet(this.__wbg_ptr, prot_index, vab_offset, seq_offset, duration_seconds, reverb_mode, reverb_route, interpolation, wet_percent);
+        var v1 = getArrayI16FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 2, 2);
+        return v1;
+    }
+    /**
+     * Render a short selected-note audition. `stage` is intentionally coarse:
+     * 0 raw decoded sample, 1 pitched sample, 2 pitched sample with bend,
+     * 3-5 dry SPU voice, 6 wet return only, 7 dry + wet.
+     * @param {number} prot_index
+     * @param {number} vab_offset
+     * @param {number} seq_offset
+     * @param {number} note_id
+     * @param {number} stage
+     * @param {number} reverb_mode
+     * @param {number} interpolation
+     * @param {number} wet_percent
+     * @param {number} duration_seconds
+     * @returns {Int16Array}
+     */
+    render_note_audition_i16(prot_index, vab_offset, seq_offset, note_id, stage, reverb_mode, interpolation, wet_percent, duration_seconds) {
+        const ret = wasm.legaiaaudio_render_note_audition_i16(this.__wbg_ptr, prot_index, vab_offset, seq_offset, note_id, stage, reverb_mode, interpolation, wet_percent, duration_seconds);
+        var v1 = getArrayI16FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 2, 2);
+        return v1;
+    }
+    /**
+     * Fresh SEQ Studio render path based directly on the documented
+     * SEQ/VAB/SPU chain:
+     *
+     * SEQ events -> VAB instrument/tone lookup -> SPU ADPCM samples ->
+     * pitch stepping/interpolation -> ADSR/voice mix -> stereo PCM.
+     *
+     * This intentionally bypasses the older SEQ Studio preview-effect
+     * wrappers: no wetness control, no debug route, no monitor mode, no
+     * cached desktop-specific signal path. Reverb mode uses the libspu-style
+     * mode byte documented in `docs/subsystems/audio.md`; per-voice sends
+     * come from VAB tone mode bit `0x04` for non-Off modes.
+     * `reverb_mode`: 0 Off, 1 Room, 2 StudioA, 3 StudioB, 4 StudioC,
+     * 5 Hall, 6 Space, 7 Echo, 8 Delay, 9 Pipe.
+     * `interpolation`: 0 nearest, 1 linear, 3 PSX Gaussian.
+     * `reverb_depth_percent`: final reverb return gain; 100 = unity.
+     * `output_lowpass`: approximate PS1 analog/post-DAC softening.
+     * `stereo_width_percent`: mid/side width; 100 = unchanged.
+     * @param {number} prot_index
+     * @param {number} vab_offset
+     * @param {number} seq_offset
+     * @param {number} duration_seconds
+     * @param {number} reverb_mode
+     * @param {number} interpolation
+     * @param {number} reverb_depth_percent
+     * @param {boolean} output_lowpass
+     * @param {number} stereo_width_percent
+     * @returns {Int16Array}
+     */
+    render_seq_studio_doc_spu_i16(prot_index, vab_offset, seq_offset, duration_seconds, reverb_mode, interpolation, reverb_depth_percent, output_lowpass, stereo_width_percent) {
+        const ret = wasm.legaiaaudio_render_seq_studio_doc_spu_i16(this.__wbg_ptr, prot_index, vab_offset, seq_offset, duration_seconds, reverb_mode, interpolation, reverb_depth_percent, output_lowpass, stereo_width_percent);
+        var v1 = getArrayI16FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 2, 2);
+        return v1;
+    }
+    /**
+     * Fresh document-based renderer with explicit diagnostic reverb routing.
+     * `reverb_route`: 0 scanned tone sends, 1 force send, 2 dry only,
+     * 3 wet return only, 4 bypass reverb engine, 5 reverb input monitor.
+     * @param {number} prot_index
+     * @param {number} vab_offset
+     * @param {number} seq_offset
+     * @param {number} duration_seconds
+     * @param {number} reverb_mode
+     * @param {number} interpolation
+     * @param {number} reverb_depth_percent
+     * @param {boolean} output_lowpass
+     * @param {number} stereo_width_percent
+     * @param {number} reverb_route
+     * @returns {Int16Array}
+     */
+    render_seq_studio_doc_spu_i16_routed(prot_index, vab_offset, seq_offset, duration_seconds, reverb_mode, interpolation, reverb_depth_percent, output_lowpass, stereo_width_percent, reverb_route) {
+        const ret = wasm.legaiaaudio_render_seq_studio_doc_spu_i16_routed(this.__wbg_ptr, prot_index, vab_offset, seq_offset, duration_seconds, reverb_mode, interpolation, reverb_depth_percent, output_lowpass, stereo_width_percent, reverb_route);
+        var v1 = getArrayI16FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 2, 2);
+        return v1;
+    }
+    /**
      * Resume the BGM AudioContext. Browsers often construct the
      * `AudioContext` in `suspended` state even when the constructor
      * runs inside a user-gesture handler; the JS side calls this
@@ -171,6 +348,112 @@ export class LegaiaAudio {
     resume_bgm() {
         const ret = wasm.legaiaaudio_resume_bgm(this.__wbg_ptr);
         return ret;
+    }
+    /**
+     * Export a normalized SEQ byte stream in the retail Legaia header shape.
+     * @param {number} prot_index
+     * @param {number} seq_offset
+     * @returns {Uint8Array}
+     */
+    seq_bytes(prot_index, seq_offset) {
+        const ret = wasm.legaiaaudio_seq_bytes(this.__wbg_ptr, prot_index, seq_offset);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * Resolve one piano-roll note id into its SEQ channel state, VAB program,
+     * VAB tone, VAG sample, and computed SPU pitch. Unknown/unavailable fields
+     * are emitted as JSON null so the UI can label them explicitly.
+     * @param {number} prot_index
+     * @param {number} vab_offset
+     * @param {number} seq_offset
+     * @param {number} note_id
+     * @returns {string}
+     */
+    seq_note_voice_json(prot_index, vab_offset, seq_offset, note_id) {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.legaiaaudio_seq_note_voice_json(this.__wbg_ptr, prot_index, vab_offset, seq_offset, note_id);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Important setup/controller events near the start of the selected SEQ.
+     * @param {number} prot_index
+     * @param {number} seq_offset
+     * @returns {string}
+     */
+    seq_setup_events_json(prot_index, seq_offset) {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.legaiaaudio_seq_setup_events_json(this.__wbg_ptr, prot_index, seq_offset);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Decode a SEQ into timeline JSON for editor-style displays.
+     * Shape:
+     * `{ header, total_ticks, event_count, notes: [...], loops: [...], programs: [...] }`.
+     * @param {number} prot_index
+     * @param {number} seq_offset
+     * @returns {string}
+     */
+    seq_timeline_json(prot_index, seq_offset) {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.legaiaaudio_seq_timeline_json(this.__wbg_ptr, prot_index, seq_offset);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Export a simple edited variant with NoteOn/NoteOff keys transposed by
+     * `semitones`. This gives the studio a real write path while deeper
+     * piano-roll editing grows around the same serializer.
+     * @param {number} prot_index
+     * @param {number} seq_offset
+     * @param {number} semitones
+     * @returns {Uint8Array}
+     */
+    seq_transpose_bytes(prot_index, seq_offset, semitones) {
+        const ret = wasm.legaiaaudio_seq_transpose_bytes(this.__wbg_ptr, prot_index, seq_offset, semitones);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * Trace every NoteOn through program/tone/sample resolution.
+     * @param {number} prot_index
+     * @param {number} vab_offset
+     * @param {number} seq_offset
+     * @returns {string}
+     */
+    seq_voice_trace_json(prot_index, vab_offset, seq_offset) {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.legaiaaudio_seq_voice_trace_json(this.__wbg_ptr, prot_index, vab_offset, seq_offset);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
     }
     /**
      * Set the BGM playback gain. Retail SEQ + clean-room SPU output sits
@@ -2361,8 +2644,8 @@ function __wbg_get_imports() {
             return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("AudioProcessingEvent")], shim_idx: 557, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hba2c483fb165cd67);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("AudioProcessingEvent")], shim_idx: 564, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h035d1f39f3bb1fcf);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
@@ -2387,8 +2670,8 @@ function __wbg_get_imports() {
 }
 
 const lAudioContext = (typeof AudioContext !== 'undefined' ? AudioContext : (typeof webkitAudioContext !== 'undefined' ? webkitAudioContext : undefined));
-function wasm_bindgen__convert__closures_____invoke__hba2c483fb165cd67(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__hba2c483fb165cd67(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h035d1f39f3bb1fcf(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h035d1f39f3bb1fcf(arg0, arg1, arg2);
 }
 
 const LegaiaAudioFinalization = (typeof FinalizationRegistry === 'undefined')

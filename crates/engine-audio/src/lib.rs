@@ -35,7 +35,7 @@ pub use spu::Spu;
 pub use spu::adpcm::{AdpcmDecoder, BLOCK_BYTES, SAMPLES_PER_BLOCK};
 pub use spu::adsr::{AdsrConfig, AdsrState, Phase};
 pub use spu::ram::{SpuAllocator, SpuRam, TransferDirection};
-pub use spu::voice::{PITCH_UNITY, SPU_INTERNAL_RATE, Voice};
+pub use spu::voice::{InterpolationMode, PITCH_UNITY, SPU_INTERNAL_RATE, Voice};
 pub use vab_bind::{UploadedVag, VabBank};
 #[cfg(all(target_arch = "wasm32", feature = "audio-webaudio"))]
 pub use webaudio::WebAudioOut;
@@ -61,10 +61,22 @@ pub fn render_bgm_to_pcm(
     spu: &mut Spu,
     duration_samples: usize,
 ) -> Vec<i16> {
+    render_bgm_to_pcm_debug_mix(sequencer, spu, duration_samples, false, false)
+}
+
+/// Debug render variant that can isolate dry voice output or the wet reverb
+/// return without changing sequencer timing or voice allocation.
+pub fn render_bgm_to_pcm_debug_mix(
+    sequencer: &mut Sequencer,
+    spu: &mut Spu,
+    duration_samples: usize,
+    mute_dry: bool,
+    mute_wet: bool,
+) -> Vec<i16> {
     let mut out = Vec::with_capacity(duration_samples * 2);
     for _ in 0..duration_samples {
         sequencer.tick_sample(spu);
-        let (l, r) = spu.tick();
+        let (l, r) = spu.tick_debug_mix(mute_dry, mute_wet);
         out.push(l);
         out.push(r);
     }
@@ -572,13 +584,14 @@ impl AudioOut {
     pub fn attach_sequencer(&self, seq: Sequencer) {
         let mut s = self.state.lock().unwrap();
         if let Some(mut prev) = s.sequencer.take() {
-            prev.stop(&mut s.spu);
+            prev.reset_voices(&mut s.spu);
         }
         // Cancel any in-progress crossfade.
         s.pending_seq = None;
         s.master_fade = 1.0;
         s.fade_target = 1.0;
         s.fade_step = 0.0;
+        s.sequencer_paused = false;
         s.sequencer = Some(seq);
     }
 
@@ -587,12 +600,13 @@ impl AudioOut {
     pub fn detach_sequencer(&self) {
         let mut s = self.state.lock().unwrap();
         if let Some(mut seq) = s.sequencer.take() {
-            seq.stop(&mut s.spu);
+            seq.reset_voices(&mut s.spu);
         }
         s.pending_seq = None;
         s.master_fade = 1.0;
         s.fade_target = 1.0;
         s.fade_step = 0.0;
+        s.sequencer_paused = false;
     }
 
     /// Gate the sequencer tick without detaching it. When `paused` is
@@ -624,6 +638,7 @@ impl AudioOut {
             s.master_fade = 1.0;
             s.fade_target = 1.0;
             s.fade_step = 0.0;
+            s.sequencer_paused = false;
             s.sequencer = Some(new_seq);
         } else {
             // Queue new_seq and start fading out.

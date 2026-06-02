@@ -20,6 +20,11 @@ export class LegaiaAudio {
      */
     bgm_device_rate(): number;
     /**
+     * Render a short diagnostic pass and return dry/send/wet/final peak/RMS
+     * values as JSON. This is for SEQ Studio reverb debugging.
+     */
+    bgm_mix_probe_json(prot_index: number, vab_offset: number, seq_offset: number, duration_seconds: number, reverb_mode: number, reverb_route: number, interpolation: number, wet_percent: number): string;
+    /**
      * Sample rate produced by [`Self::render_bgm_pcm_i16`] (the SPU's
      * internal 44.1 kHz). Surfaced so the JS side can build a correct
      * WAV header for `decodeAudioData`.
@@ -37,7 +42,7 @@ export class LegaiaAudio {
     decode_xa_stream_i16(lba: number, size: number, stream_idx: number): Int16Array;
     /**
      * JSON list of every BGM pair (`pBAV` + `pQES` in the same PROT entry).
-     * Shape: `[{ prot_index, vab_offset, seq_offset, program_count, sample_count, ppqn, bpm }, ...]`.
+     * Shape: `[{ prot_index, vab_offset, seq_offset, program_count, sample_count, ppqn, bpm, ...effect hints }, ...]`.
      */
     enumerate_bgm_pairs_json(): string;
     /**
@@ -68,12 +73,97 @@ export class LegaiaAudio {
      */
     render_bgm_pcm_i16(prot_index: number, vab_offset: number, seq_offset: number, duration_seconds: number): Int16Array;
     /**
+     * Render BGM PCM with an explicit preview effect override. This is for
+     * SEQ Studio auditioning while the real retail reverb setup tables are
+     * still being mapped.
+     */
+    render_bgm_pcm_i16_with_effect(prot_index: number, vab_offset: number, seq_offset: number, duration_seconds: number, reverb_mode: number, reverb_send: boolean): Int16Array;
+    /**
+     * Render BGM PCM with explicit reverb mode and routing overrides.
+     *
+     * `reverb_route`: 0 = VAB tone flags, 1 = force all voices into reverb,
+     * 2 = force all voices dry, 3 = VAB tone flags but output wet return only.
+     */
+    render_bgm_pcm_i16_with_effect_route(prot_index: number, vab_offset: number, seq_offset: number, duration_seconds: number, reverb_mode: number, reverb_route: number): Int16Array;
+    /**
+     * Render BGM PCM with explicit reverb routing and voice interpolation.
+     * `interpolation`: 0 nearest, 1 linear, 3 PSX Gaussian.
+     */
+    render_bgm_pcm_i16_with_effect_route_interp(prot_index: number, vab_offset: number, seq_offset: number, duration_seconds: number, reverb_mode: number, reverb_route: number, interpolation: number): Int16Array;
+    /**
+     * Render BGM PCM with explicit reverb routing, voice interpolation, and
+     * wet-return trim. `wet_percent` is clamped to 0..=100.
+     */
+    render_bgm_pcm_i16_with_effect_route_interp_wet(prot_index: number, vab_offset: number, seq_offset: number, duration_seconds: number, reverb_mode: number, reverb_route: number, interpolation: number, wet_percent: number): Int16Array;
+    /**
+     * Render a short selected-note audition. `stage` is intentionally coarse:
+     * 0 raw decoded sample, 1 pitched sample, 2 pitched sample with bend,
+     * 3-5 dry SPU voice, 6 wet return only, 7 dry + wet.
+     */
+    render_note_audition_i16(prot_index: number, vab_offset: number, seq_offset: number, note_id: number, stage: number, reverb_mode: number, interpolation: number, wet_percent: number, duration_seconds: number): Int16Array;
+    /**
+     * Fresh SEQ Studio render path based directly on the documented
+     * SEQ/VAB/SPU chain:
+     *
+     * SEQ events -> VAB instrument/tone lookup -> SPU ADPCM samples ->
+     * pitch stepping/interpolation -> ADSR/voice mix -> stereo PCM.
+     *
+     * This intentionally bypasses the older SEQ Studio preview-effect
+     * wrappers: no wetness control, no debug route, no monitor mode, no
+     * cached desktop-specific signal path. Reverb mode uses the libspu-style
+     * mode byte documented in `docs/subsystems/audio.md`; per-voice sends
+     * come from VAB tone mode bit `0x04` for non-Off modes.
+     * `reverb_mode`: 0 Off, 1 Room, 2 StudioA, 3 StudioB, 4 StudioC,
+     * 5 Hall, 6 Space, 7 Echo, 8 Delay, 9 Pipe.
+     * `interpolation`: 0 nearest, 1 linear, 3 PSX Gaussian.
+     * `reverb_depth_percent`: final reverb return gain; 100 = unity.
+     * `output_lowpass`: approximate PS1 analog/post-DAC softening.
+     * `stereo_width_percent`: mid/side width; 100 = unchanged.
+     */
+    render_seq_studio_doc_spu_i16(prot_index: number, vab_offset: number, seq_offset: number, duration_seconds: number, reverb_mode: number, interpolation: number, reverb_depth_percent: number, output_lowpass: boolean, stereo_width_percent: number): Int16Array;
+    /**
+     * Fresh document-based renderer with explicit diagnostic reverb routing.
+     * `reverb_route`: 0 scanned tone sends, 1 force send, 2 dry only,
+     * 3 wet return only, 4 bypass reverb engine, 5 reverb input monitor.
+     */
+    render_seq_studio_doc_spu_i16_routed(prot_index: number, vab_offset: number, seq_offset: number, duration_seconds: number, reverb_mode: number, interpolation: number, reverb_depth_percent: number, output_lowpass: boolean, stereo_width_percent: number, reverb_route: number): Int16Array;
+    /**
      * Resume the BGM AudioContext. Browsers often construct the
      * `AudioContext` in `suspended` state even when the constructor
      * runs inside a user-gesture handler; the JS side calls this
      * immediately after `start_bgm` to make the audio actually audible.
      */
     resume_bgm(): Promise<any>;
+    /**
+     * Export a normalized SEQ byte stream in the retail Legaia header shape.
+     */
+    seq_bytes(prot_index: number, seq_offset: number): Uint8Array;
+    /**
+     * Resolve one piano-roll note id into its SEQ channel state, VAB program,
+     * VAB tone, VAG sample, and computed SPU pitch. Unknown/unavailable fields
+     * are emitted as JSON null so the UI can label them explicitly.
+     */
+    seq_note_voice_json(prot_index: number, vab_offset: number, seq_offset: number, note_id: number): string;
+    /**
+     * Important setup/controller events near the start of the selected SEQ.
+     */
+    seq_setup_events_json(prot_index: number, seq_offset: number): string;
+    /**
+     * Decode a SEQ into timeline JSON for editor-style displays.
+     * Shape:
+     * `{ header, total_ticks, event_count, notes: [...], loops: [...], programs: [...] }`.
+     */
+    seq_timeline_json(prot_index: number, seq_offset: number): string;
+    /**
+     * Export a simple edited variant with NoteOn/NoteOff keys transposed by
+     * `semitones`. This gives the studio a real write path while deeper
+     * piano-roll editing grows around the same serializer.
+     */
+    seq_transpose_bytes(prot_index: number, seq_offset: number, semitones: number): Uint8Array;
+    /**
+     * Trace every NoteOn through program/tone/sample resolution.
+     */
+    seq_voice_trace_json(prot_index: number, vab_offset: number, seq_offset: number): string;
     /**
      * Set the BGM playback gain. Retail SEQ + clean-room SPU output sits
      * around 1% of the i16 range, so the audio page defaults to ~25x to
@@ -1036,6 +1126,7 @@ export interface InitOutput {
     readonly __wbg_legaiaruntime_free: (a: number, b: number) => void;
     readonly __wbg_legaiaviewer_free: (a: number, b: number) => void;
     readonly legaiaaudio_bgm_device_rate: (a: number) => number;
+    readonly legaiaaudio_bgm_mix_probe_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number];
     readonly legaiaaudio_bgm_render_rate: (a: number) => number;
     readonly legaiaaudio_decode_vab_sample_i16: (a: number, b: number, c: number, d: number) => [number, number];
     readonly legaiaaudio_decode_xa_stream_i16: (a: number, b: number, c: number, d: number) => [number, number];
@@ -1045,7 +1136,20 @@ export interface InitOutput {
     readonly legaiaaudio_load_disc: (a: number, b: number, c: number) => [number, number, number];
     readonly legaiaaudio_new: () => number;
     readonly legaiaaudio_render_bgm_pcm_i16: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly legaiaaudio_render_bgm_pcm_i16_with_effect: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
+    readonly legaiaaudio_render_bgm_pcm_i16_with_effect_route: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
+    readonly legaiaaudio_render_bgm_pcm_i16_with_effect_route_interp: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
+    readonly legaiaaudio_render_bgm_pcm_i16_with_effect_route_interp_wet: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number];
+    readonly legaiaaudio_render_note_audition_i16: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
+    readonly legaiaaudio_render_seq_studio_doc_spu_i16: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
+    readonly legaiaaudio_render_seq_studio_doc_spu_i16_routed: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number];
     readonly legaiaaudio_resume_bgm: (a: number) => any;
+    readonly legaiaaudio_seq_bytes: (a: number, b: number, c: number) => [number, number];
+    readonly legaiaaudio_seq_note_voice_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly legaiaaudio_seq_setup_events_json: (a: number, b: number, c: number) => [number, number];
+    readonly legaiaaudio_seq_timeline_json: (a: number, b: number, c: number) => [number, number];
+    readonly legaiaaudio_seq_transpose_bytes: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly legaiaaudio_seq_voice_trace_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly legaiaaudio_set_bgm_gain: (a: number, b: number) => void;
     readonly legaiaaudio_set_bgm_paused: (a: number, b: number) => void;
     readonly legaiaaudio_start_bgm: (a: number, b: number, c: number, d: number) => [number, number];
@@ -1054,7 +1158,6 @@ export interface InitOutput {
     readonly legaiaaudio_str_video_close: (a: number) => void;
     readonly legaiaaudio_str_video_open: (a: number, b: number, c: number) => [number, number];
     readonly legaiaaudio_vab_sample_list_json: (a: number, b: number, c: number) => [number, number];
-    readonly legaiaaudio_vab_sample_rate: (a: number) => number;
     readonly legaiaaudio_xa_metadata_json: (a: number, b: number, c: number) => [number, number];
     readonly legaiaruntime_active_actor_count: (a: number) => number;
     readonly legaiaruntime_audio_init: (a: number) => number;
@@ -1180,7 +1283,8 @@ export interface InitOutput {
     readonly legaiaviewer_walk_placement_positions: (a: number) => [number, number];
     readonly legaiaviewer_walk_placement_slots: (a: number) => [number, number];
     readonly legaiaviewer_worldmap_menu_json: (a: number) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__hba2c483fb165cd67: (a: number, b: number, c: any) => void;
+    readonly legaiaaudio_vab_sample_rate: (a: number) => number;
+    readonly wasm_bindgen__convert__closures_____invoke__h035d1f39f3bb1fcf: (a: number, b: number, c: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

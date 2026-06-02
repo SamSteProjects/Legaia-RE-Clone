@@ -142,12 +142,13 @@ impl WebAudioOut {
     pub fn attach_sequencer(&self, seq: Sequencer) {
         let mut s = self.state.borrow_mut();
         if let Some(mut prev) = s.sequencer.take() {
-            prev.stop(&mut s.spu);
+            prev.reset_voices(&mut s.spu);
         }
         s.pending_seq = None;
         s.master_fade = 1.0;
         s.fade_target = 1.0;
         s.fade_step = 0.0;
+        s.sequencer_paused = false;
         s.sequencer = Some(seq);
     }
 
@@ -155,12 +156,13 @@ impl WebAudioOut {
     pub fn detach_sequencer(&self) {
         let mut s = self.state.borrow_mut();
         if let Some(mut seq) = s.sequencer.take() {
-            seq.stop(&mut s.spu);
+            seq.reset_voices(&mut s.spu);
         }
         s.pending_seq = None;
         s.master_fade = 1.0;
         s.fade_target = 1.0;
         s.fade_step = 0.0;
+        s.sequencer_paused = false;
     }
 
     /// Gate the sequencer tick. When `paused`, the sequencer clock stops
@@ -182,6 +184,7 @@ impl WebAudioOut {
             s.master_fade = 1.0;
             s.fade_target = 1.0;
             s.fade_step = 0.0;
+            s.sequencer_paused = false;
             s.sequencer = Some(new_seq);
         } else {
             s.pending_seq = Some(new_seq);

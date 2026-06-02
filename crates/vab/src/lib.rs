@@ -374,19 +374,27 @@ pub fn decode_vag(buf: &[u8]) -> Result<Vec<i16>> {
     let mut prev1: i32 = 0;
     let mut prev2: i32 = 0;
 
+    let mut started = false;
     for b in 0..n_blocks {
         let block = &buf[b * VAG_BLOCK_BYTES..(b + 1) * VAG_BLOCK_BYTES];
         let header_byte = block[0];
         let filter = ((header_byte >> 4) & 0x0F) as usize;
-        let shift = (header_byte & 0x0F) as i32;
+        let shift = match (header_byte & 0x0F) as i32 {
+            s @ 0..=12 => s,
+            _ => 9,
+        };
         let flag = block[1];
 
-        // End-of-stream sentinel: many Legaia VAB samples mark end with
-        // `flag & 0x01` AND fill the header byte with garbage (filter > 4).
-        // Treat both signals as "stop here, don't decode the sentinel".
-        if flag & 0x01 != 0 || filter > 4 {
-            break;
+        // Some Legaia BGM banks carry one garbage/padding block at the front
+        // of a VAG span. Skip leading bad headers, but once a real block has
+        // started, a bad header is an end sentinel.
+        if filter > 4 {
+            if started {
+                break;
+            }
+            continue;
         }
+        started = true;
 
         let f0 = legaia_xa::F0[filter];
         let f1 = legaia_xa::F1[filter];
@@ -420,6 +428,11 @@ pub fn decode_vag(buf: &[u8]) -> Result<Vec<i16>> {
                 prev2 = prev1;
                 prev1 = clamped;
             }
+        }
+        // The SPU plays the end-flag block, then stops or loops after its
+        // 28 decoded samples. For standalone previews, decode it and stop.
+        if flag & 0x01 != 0 {
+            break;
         }
     }
     Ok(out)

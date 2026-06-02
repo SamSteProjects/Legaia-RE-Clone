@@ -18,6 +18,7 @@
 
 use super::adpcm::{AdpcmDecoder, BLOCK_BYTES, SAMPLES_PER_BLOCK};
 use super::adsr::{AdsrConfig, AdsrState, Phase};
+use super::gaussian;
 use super::ram::SpuRam;
 
 /// Internal SPU output rate (constant per hardware).
@@ -25,6 +26,26 @@ pub const SPU_INTERNAL_RATE: u32 = 44_100;
 
 /// Pitch unit: 0x1000 = 1× sample rate.
 pub const PITCH_UNITY: u16 = 0x1000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterpolationMode {
+    Nearest,
+    Linear,
+    /// PSX SPU 4-point Gaussian interpolation using the hardware table from
+    /// PSXSPX. Kept as the value `3` because existing UI/debug exports use
+    /// that selector for the Gaussian mode.
+    GaussianApprox,
+}
+
+impl InterpolationMode {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::Linear,
+            3 => Self::GaussianApprox,
+            _ => Self::Nearest,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Voice {
@@ -50,6 +71,10 @@ pub struct Voice {
     /// `SpuSetVoiceReverb`. Defaults to `false` - engines opt voices in
     /// when starting a Spirit Art / echo-flagged sound effect.
     pub reverb_send: bool,
+    /// Per-voice sample interpolation. Retail PS1 SPU uses a Gaussian table
+    /// indexed by fractional pitch-counter bits; the Gaussian mode uses the
+    /// PSXSPX coefficient table and tap order.
+    pub interpolation: InterpolationMode,
 
     // --- runtime state --------------------------------------------------
     /// Absolute address of the *current* ADPCM block in SPU RAM.
@@ -60,6 +85,10 @@ pub struct Voice {
     sample_frac: u32,
     /// 28-sample buffer for the current block.
     block_pcm: [i16; SAMPLES_PER_BLOCK],
+    /// Last three samples of the previous block so 4-tap interpolation can
+    /// cross ADPCM block boundaries. DuckStation-style SPU implementations
+    /// keep this history for the same reason.
+    prev_block_tail: [i16; 3],
     /// Decoder state (carries `prev1`/`prev2` between blocks).
     decoder: AdpcmDecoder,
     /// True if the voice has at least one decoded block ready.
@@ -77,10 +106,12 @@ impl Default for Voice {
             adsr_cfg: AdsrConfig::default(),
             adsr: AdsrState::default(),
             reverb_send: false,
+            interpolation: InterpolationMode::Nearest,
             cur_block_addr: 0,
             sample_idx: 0,
             sample_frac: 0,
             block_pcm: [0; SAMPLES_PER_BLOCK],
+            prev_block_tail: [0; 3],
             decoder: AdpcmDecoder::new(),
             has_block: false,
         }
@@ -100,12 +131,17 @@ impl Voice {
         self.reverb_send = on;
     }
 
+    pub fn set_interpolation(&mut self, mode: InterpolationMode) {
+        self.interpolation = mode;
+    }
+
     /// Trigger a key-on: rewind to start, decode the first block, kick the
     /// envelope into the Attack phase.
     pub fn key_on(&mut self, ram: &SpuRam) {
         self.cur_block_addr = self.start_addr;
         self.sample_idx = 0;
         self.sample_frac = 0;
+        self.prev_block_tail = [0; 3];
         self.decoder.reset();
         self.fetch_block(ram);
         self.adsr.key_on();
@@ -117,25 +153,36 @@ impl Voice {
         self.adsr.key_off();
     }
 
+    /// Hard stop this voice immediately. Useful for preview tooling and for
+    /// tearing down a sequencer before loading a new bank into the same SPU
+    /// RAM addresses.
+    pub fn reset(&mut self) {
+        *self = Voice::default();
+    }
+
     /// True when the envelope is in `Off` (envelope finished or never started).
     pub fn is_off(&self) -> bool {
         self.adsr.phase == Phase::Off
     }
 
-    /// Sample-level tick. Advances envelope by one tick and produces one
-    /// (left, right) output sample at the SPU internal rate. Voices that
-    /// are off produce silence.
+    /// Sample-level tick. Produces one (left, right) output sample at the SPU
+    /// internal rate, then advances envelope/pitch state. This matches the
+    /// ordering used by emulator SPU cores such as DuckStation's `SampleVoice`:
+    /// decode if needed, interpolate, apply current ADSR, tick ADSR, advance
+    /// the pitch counter, then handle block loop/end flags and channel volume.
     pub fn tick(&mut self, ram: &SpuRam) -> (i32, i32) {
         if !self.has_block || self.adsr.phase == Phase::Off {
             return (0, 0);
         }
-        let env = self.adsr.tick(&self.adsr_cfg) as i32;
-        let raw = self.block_pcm[self.sample_idx as usize] as i32;
+        let env = self.adsr.level as i32;
+        let raw = self.interpolated_sample() as i32;
 
         // Mix: raw * env / 0x7FFF * vol / 0x3FFF.
         let enveloped = (raw * env) >> 15;
         let left = (enveloped * self.vol_left as i32) >> 14;
         let right = (enveloped * self.vol_right as i32) >> 14;
+
+        self.adsr.tick(&self.adsr_cfg);
 
         // Advance fractional pitch counter and walk forward through samples.
         self.sample_frac += self.pitch as u32;
@@ -157,6 +204,13 @@ impl Voice {
     /// Decode the block at `cur_block_addr` into `block_pcm`. Sets
     /// `has_block = false` on bad-header (treats as EOS).
     fn fetch_block(&mut self, ram: &SpuRam) {
+        if self.has_block {
+            self.prev_block_tail = [
+                self.block_pcm[SAMPLES_PER_BLOCK - 3],
+                self.block_pcm[SAMPLES_PER_BLOCK - 2],
+                self.block_pcm[SAMPLES_PER_BLOCK - 1],
+            ];
+        }
         let bytes = ram.slice(self.cur_block_addr, BLOCK_BYTES as u32);
         if bytes.len() < BLOCK_BYTES {
             self.has_block = false;
@@ -173,6 +227,41 @@ impl Voice {
         }
         self.block_pcm = pcm;
         self.has_block = true;
+    }
+
+    fn sample_at_relative(&self, rel: i32) -> i16 {
+        let idx = self.sample_idx as i32 + rel;
+        if idx < 0 {
+            let tail_idx = (idx + 3).clamp(0, 2) as usize;
+            self.prev_block_tail[tail_idx]
+        } else {
+            self.block_pcm
+                .get(idx as usize)
+                .copied()
+                .unwrap_or_else(|| self.block_pcm[SAMPLES_PER_BLOCK - 1])
+        }
+    }
+
+    fn interpolated_sample(&self) -> i16 {
+        match self.interpolation {
+            InterpolationMode::Nearest => self.block_pcm[self.sample_idx as usize],
+            InterpolationMode::Linear => {
+                let a = self.sample_at_relative(0) as i32;
+                let b = self.sample_at_relative(1) as i32;
+                let frac = self.sample_frac.min(PITCH_UNITY as u32 - 1) as i32;
+                (a + (((b - a) * frac) >> 12)).clamp(i16::MIN as i32, i16::MAX as i32) as i16
+            }
+            InterpolationMode::GaussianApprox => {
+                let i = gaussian::interpolation_index(self.sample_frac);
+                gaussian::interpolate(
+                    self.sample_at_relative(-3),
+                    self.sample_at_relative(-2),
+                    self.sample_at_relative(-1),
+                    self.sample_at_relative(0),
+                    i,
+                )
+            }
+        }
     }
 
     /// Decide what comes after the current block: jump to loop, advance to
@@ -311,5 +400,84 @@ mod tests {
             v.tick(&ram);
         }
         assert!(!v.is_off());
+    }
+
+    #[test]
+    fn unity_pitch_advances_one_sample_per_tick() {
+        let stream = synth_silence_stream(2, false);
+        let mut ram = SpuRam::new();
+        ram.write_at(0x1000, &stream);
+        let mut v = Voice {
+            start_addr: 0x1000,
+            pitch: PITCH_UNITY,
+            adsr_cfg: hold_forever_adsr(),
+            ..Voice::default()
+        };
+        v.key_on(&ram);
+        assert_eq!(v.sample_idx, 0);
+        assert_eq!(v.sample_frac, 0);
+        v.tick(&ram);
+        assert_eq!(v.sample_idx, 1);
+        assert_eq!(v.sample_frac, 0);
+    }
+
+    #[test]
+    fn gaussian_voice_render_uses_fractional_pitch_shape() {
+        let mut stream = vec![0u8; BLOCK_BYTES * 2];
+        stream[0] = 0x00;
+        stream[1] = 0x00;
+        stream[2] = 0x11;
+        let end = BLOCK_BYTES;
+        stream[end] = 0x00;
+        stream[end + 1] = 0x01;
+
+        let mut ram = SpuRam::new();
+        ram.write_at(0x1000, &stream);
+        let mut v = Voice {
+            start_addr: 0x1000,
+            pitch: 0x0800,
+            adsr_cfg: hold_forever_adsr(),
+            interpolation: InterpolationMode::GaussianApprox,
+            ..Voice::default()
+        };
+        v.key_on(&ram);
+
+        let frames: Vec<i32> = (0..8).map(|_| v.tick(&ram).0).collect();
+        assert!(frames.iter().any(|&s| s != 0));
+        assert_ne!(
+            frames[0], frames[1],
+            "fractional stepping should interpolate between samples"
+        );
+    }
+
+    #[test]
+    fn sample_uses_current_adsr_level_before_ticking_envelope() {
+        let mut stream = vec![0u8; BLOCK_BYTES];
+        stream[1] = 0x01;
+        for b in &mut stream[2..] {
+            *b = 0x11;
+        }
+
+        let mut ram = SpuRam::new();
+        ram.write_at(0x1000, &stream);
+        let mut v = Voice {
+            start_addr: 0x1000,
+            adsr_cfg: AdsrConfig {
+                attack_shift: 0,
+                decay_shift: 0,
+                sustain_level: 0x7FFF,
+                ..AdsrConfig::default()
+            },
+            ..Voice::default()
+        };
+        v.key_on(&ram);
+        assert_eq!(v.adsr.level, 0);
+
+        let first = v.tick(&ram).0;
+        assert_eq!(
+            first, 0,
+            "DuckStation-style order applies the current ADSR level before ticking it"
+        );
+        assert!(v.adsr.level > 0);
     }
 }

@@ -116,6 +116,11 @@ pub struct AdsrState {
     pub phase: Phase,
     /// Envelope level, 0..=0x7FFF.
     pub level: u16,
+    /// Remaining 44.1 kHz ticks before the next ADSR level step. PSXSPX
+    /// documents this as `AdsrCycles = 1 << max(0, shift - 11)`: high shift
+    /// values slow the envelope by spacing out fixed-size steps rather than
+    /// only shrinking the step magnitude.
+    step_wait: u32,
 }
 
 impl Default for AdsrState {
@@ -123,6 +128,7 @@ impl Default for AdsrState {
         Self {
             phase: Phase::Off,
             level: 0,
+            step_wait: 0,
         }
     }
 }
@@ -131,111 +137,128 @@ impl AdsrState {
     pub fn key_on(&mut self) {
         self.phase = Phase::Attack;
         self.level = 0;
+        self.step_wait = 0;
     }
 
     pub fn key_off(&mut self) {
         // libspu KeyOff transitions any phase to Release.
         if self.phase != Phase::Off {
             self.phase = Phase::Release;
+            self.step_wait = 0;
         }
     }
 
     /// Advance the envelope by one sample tick. Returns the new level.
     pub fn tick(&mut self, cfg: &AdsrConfig) -> u16 {
+        if self.step_wait > 0 {
+            self.step_wait -= 1;
+            return self.level;
+        }
+
         match self.phase {
             Phase::Off => {
                 self.level = 0;
+                self.step_wait = 0;
                 return 0;
             }
             Phase::Attack => {
-                let delta = compute_delta_increase(
+                let (delta, cycles) = compute_step(
                     cfg.attack_exp,
+                    true,
                     cfg.attack_shift,
                     cfg.attack_step,
                     self.level,
                 );
+                self.step_wait = cycles.saturating_sub(1);
                 self.level = self.level.saturating_add(delta as u16).min(0x7FFF);
                 if self.level >= 0x7FFF {
                     self.level = 0x7FFF;
                     self.phase = Phase::Decay;
+                    self.step_wait = 0;
                 }
             }
             Phase::Decay => {
                 // Decay is always exponential decrease with step=-8 (i.e. step_bits=0).
-                let delta = compute_delta_exp_decrease(cfg.decay_shift, 0, self.level);
-                self.level = self.level.saturating_sub(delta as u16);
+                let (delta, cycles) = compute_step(true, false, cfg.decay_shift, 0, self.level);
+                self.step_wait = cycles.saturating_sub(1);
+                self.apply_signed_delta(delta);
                 if self.level <= cfg.sustain_level {
                     self.level = cfg.sustain_level;
                     self.phase = Phase::Sustain;
+                    self.step_wait = 0;
                 }
             }
             Phase::Sustain => {
                 if cfg.sustain_decrease {
-                    let delta = if cfg.sustain_exp {
-                        compute_delta_exp_decrease(cfg.sustain_shift, cfg.sustain_step, self.level)
-                    } else {
-                        compute_delta_linear(cfg.sustain_shift, cfg.sustain_step, false)
-                    };
-                    self.level = self.level.saturating_sub(delta as u16);
-                    if self.level == 0 {
-                        self.phase = Phase::Off;
-                    }
-                } else {
-                    let delta = compute_delta_increase(
+                    let (delta, cycles) = compute_step(
                         cfg.sustain_exp,
+                        false,
                         cfg.sustain_shift,
                         cfg.sustain_step,
                         self.level,
                     );
+                    self.step_wait = cycles.saturating_sub(1);
+                    self.apply_signed_delta(delta);
+                    if self.level == 0 {
+                        self.phase = Phase::Off;
+                        self.step_wait = 0;
+                    }
+                } else {
+                    let (delta, cycles) = compute_step(
+                        cfg.sustain_exp,
+                        true,
+                        cfg.sustain_shift,
+                        cfg.sustain_step,
+                        self.level,
+                    );
+                    self.step_wait = cycles.saturating_sub(1);
                     self.level = self.level.saturating_add(delta as u16).min(0x7FFF);
                 }
             }
             Phase::Release => {
-                let delta = if cfg.release_exp {
-                    compute_delta_exp_decrease(cfg.release_shift, 0, self.level)
-                } else {
-                    compute_delta_linear(cfg.release_shift, 0, false)
-                };
-                self.level = self.level.saturating_sub(delta as u16);
+                let (delta, cycles) =
+                    compute_step(cfg.release_exp, false, cfg.release_shift, 0, self.level);
+                self.step_wait = cycles.saturating_sub(1);
+                self.apply_signed_delta(delta);
                 if self.level == 0 {
                     self.phase = Phase::Off;
+                    self.step_wait = 0;
                 }
             }
         }
         self.level
     }
+
+    fn apply_signed_delta(&mut self, delta: i32) {
+        let next = self.level as i32 + delta;
+        self.level = next.clamp(0, 0x7FFF) as u16;
+    }
 }
 
-/// Linear delta for increase (`negative=false`) or decrease (`negative=true`).
-fn compute_delta_linear(shift: u8, step_bits: u8, negative: bool) -> i32 {
-    let step = if negative {
-        -(8 - step_bits as i32)
-    } else {
+/// Compute one PSXSPX ADSR level step and the number of 44.1 kHz ticks to
+/// wait before the following step.
+fn compute_step(exp: bool, increase: bool, shift: u8, step_bits: u8, level: u16) -> (i32, u32) {
+    let mut cycles = 1u32 << shift.saturating_sub(11);
+    let step_value = if increase {
         7 - step_bits as i32
-    };
-    if shift < 11 {
-        step << (11 - shift) as u32
     } else {
-        step >> (shift - 11) as u32
+        -8 + step_bits as i32
+    };
+    let mut step = if shift < 11 {
+        step_value << (11 - shift) as u32
+    } else {
+        step_value
+    };
+    if exp && increase && level > 0x6000 {
+        cycles = cycles.saturating_mul(4);
     }
-    .abs()
-}
-
-/// Exponential-curve increase delta. Slows down past 0x6000, which gives the
-/// characteristic libspu attack curve.
-fn compute_delta_increase(exp: bool, shift: u8, step_bits: u8, level: u16) -> i32 {
-    let mut delta = compute_delta_linear(shift, step_bits, false);
-    if exp && level > 0x6000 {
-        delta >>= 2;
+    if exp && !increase {
+        step = (step * level as i32) >> 15;
+        if step == 0 && level > 0 {
+            step = -1;
+        }
     }
-    delta
-}
-
-/// Exponential-curve decrease delta. Scales by `level/0x8000`, which gives
-/// the libspu "fade exponentially toward zero" shape.
-fn compute_delta_exp_decrease(shift: u8, step_bits: u8, level: u16) -> i32 {
-    let base = compute_delta_linear(shift, step_bits, true);
-    ((base as u32 * level as u32) >> 15) as i32
+    (step, cycles.max(1))
 }
 
 #[cfg(test)]
@@ -275,6 +298,45 @@ mod tests {
         assert!(s.level > 0);
         assert!(s.level < 0x7FFF);
         assert_eq!(s.phase, Phase::Attack);
+    }
+
+    /// PSXSPX: shifts above 11 don't shrink the step further; they insert
+    /// wait cycles between steps (`1 << (shift - 11)` samples).
+    #[test]
+    fn high_shift_inserts_wait_cycles() {
+        let cfg = AdsrConfig {
+            attack_shift: 13, // cycles = 4, step = +7
+            ..AdsrConfig::default()
+        };
+        let mut s = AdsrState::default();
+        s.key_on();
+        assert_eq!(s.tick(&cfg), 7);
+        assert_eq!(s.tick(&cfg), 7);
+        assert_eq!(s.tick(&cfg), 7);
+        assert_eq!(s.tick(&cfg), 7);
+        assert_eq!(s.tick(&cfg), 14);
+    }
+
+    /// Exponential attack above 0x6000 waits four times as long before the
+    /// next step, matching PSXSPX's "fake exponential" behavior.
+    #[test]
+    fn exponential_attack_above_threshold_extends_wait() {
+        let cfg = AdsrConfig {
+            attack_exp: true,
+            attack_shift: 11,
+            attack_step: 0,
+            ..AdsrConfig::default()
+        };
+        let mut s = AdsrState {
+            phase: Phase::Attack,
+            level: 0x6001,
+            ..AdsrState::default()
+        };
+        assert_eq!(s.tick(&cfg), 0x6008);
+        assert_eq!(s.tick(&cfg), 0x6008);
+        assert_eq!(s.tick(&cfg), 0x6008);
+        assert_eq!(s.tick(&cfg), 0x6008);
+        assert_eq!(s.tick(&cfg), 0x600F);
     }
 
     /// Decay drops to sustain level then stops.

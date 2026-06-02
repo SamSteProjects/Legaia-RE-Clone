@@ -176,6 +176,32 @@ impl Seq {
         self.events.iter().map(|e| e.delta as u64).sum()
     }
 
+    /// Serialize this SEQ in the retail Legaia header shape (`u32 BE`
+    /// version at +4). Channel events are emitted with explicit status bytes
+    /// instead of running status so edited files stay simple and stable.
+    pub fn to_bytes_legaia(&self) -> Result<Vec<u8>> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&SEQ_MAGIC);
+        out.extend_from_slice(&(self.header.version as u32).to_be_bytes());
+        out.extend_from_slice(&self.header.ppqn.to_be_bytes());
+        write_u24_be(&mut out, self.header.tempo_us_per_qn)?;
+        out.push(self.header.time_sig_num);
+        out.push(self.header.time_sig_denom_pow2);
+
+        let mut has_eot = false;
+        for ev in &self.events {
+            write_vlq(&mut out, ev.delta)?;
+            write_event_body(&mut out, &ev.body)?;
+            has_eot |= matches!(ev.body, EventBody::Meta(MetaMessage::EndOfTrack));
+        }
+        if !has_eot {
+            out.push(0);
+            out.push(0xFF);
+            out.push(0x2F);
+        }
+        Ok(out)
+    }
+
     /// Histogram of channel/meta event types - useful for inspection.
     pub fn event_summary(&self) -> EventSummary {
         let mut s = EventSummary::default();
@@ -312,6 +338,92 @@ pub fn read_vlq(buf: &[u8], pos: usize) -> Result<(u32, usize)> {
         }
     }
     Ok((value, consumed))
+}
+
+/// Encode a u32 as a MIDI/SEQ variable-length quantity.
+pub fn write_vlq(out: &mut Vec<u8>, mut v: u32) -> Result<()> {
+    if v > 0x0FFF_FFFF {
+        bail!("VLQ value too large: {v}");
+    }
+    let mut bytes = [0u8; 4];
+    let mut n = 0;
+    loop {
+        bytes[n] = (v & 0x7F) as u8;
+        n += 1;
+        v >>= 7;
+        if v == 0 {
+            break;
+        }
+    }
+    for i in (0..n).rev() {
+        let mut b = bytes[i];
+        if i != 0 {
+            b |= 0x80;
+        }
+        out.push(b);
+    }
+    Ok(())
+}
+
+fn write_u24_be(out: &mut Vec<u8>, v: u32) -> Result<()> {
+    if v > 0x00FF_FFFF {
+        bail!("u24 value too large: {v}");
+    }
+    out.push(((v >> 16) & 0xFF) as u8);
+    out.push(((v >> 8) & 0xFF) as u8);
+    out.push((v & 0xFF) as u8);
+    Ok(())
+}
+
+fn write_event_body(out: &mut Vec<u8>, body: &EventBody) -> Result<()> {
+    match body {
+        EventBody::Channel { channel, message } => {
+            if *channel > 15 {
+                bail!("channel out of range: {channel}");
+            }
+            match *message {
+                ChannelMessage::NoteOff { key, velocity } => {
+                    out.extend_from_slice(&[0x80 | *channel, key & 0x7F, velocity & 0x7F]);
+                }
+                ChannelMessage::NoteOn { key, velocity } => {
+                    out.extend_from_slice(&[0x90 | *channel, key & 0x7F, velocity & 0x7F]);
+                }
+                ChannelMessage::PolyAftertouch { key, value } => {
+                    out.extend_from_slice(&[0xA0 | *channel, key & 0x7F, value & 0x7F]);
+                }
+                ChannelMessage::ControlChange { control, value } => {
+                    out.extend_from_slice(&[0xB0 | *channel, control & 0x7F, value & 0x7F]);
+                }
+                ChannelMessage::ProgramChange { program } => {
+                    out.extend_from_slice(&[0xC0 | *channel, program & 0x7F]);
+                }
+                ChannelMessage::ChannelAftertouch { value } => {
+                    out.extend_from_slice(&[0xD0 | *channel, value & 0x7F]);
+                }
+                ChannelMessage::PitchBend { value } => {
+                    let v = value.min(0x3FFF);
+                    out.extend_from_slice(&[
+                        0xE0 | *channel,
+                        (v & 0x7F) as u8,
+                        ((v >> 7) & 0x7F) as u8,
+                    ]);
+                }
+            }
+        }
+        EventBody::Meta(MetaMessage::EndOfTrack) => {
+            out.extend_from_slice(&[0xFF, 0x2F]);
+        }
+        EventBody::Meta(MetaMessage::SetTempo { us_per_qn }) => {
+            out.extend_from_slice(&[0xFF, 0x51]);
+            write_u24_be(out, *us_per_qn)?;
+        }
+        EventBody::Meta(MetaMessage::TimeSignature { .. })
+        | EventBody::Meta(MetaMessage::KeySignature { .. })
+        | EventBody::Meta(MetaMessage::Other { .. }) => {
+            bail!("unsupported SEQ meta event for PsyQ serialization: {body:?}");
+        }
+    }
+    Ok(())
 }
 
 fn parse_events(stream: &[u8]) -> Result<Vec<Event>> {
@@ -554,6 +666,17 @@ mod tests {
             EventBody::Meta(MetaMessage::EndOfTrack) => {}
             _ => panic!(),
         }
+    }
+
+    #[test]
+    fn serializes_legaia_header_shape() {
+        let seq = Seq::parse(&synthetic_seq()).unwrap();
+        let bytes = seq.to_bytes_legaia().unwrap();
+        assert_eq!(&bytes[0..4], b"pQES");
+        assert_eq!(&bytes[4..8], &[0, 0, 0, 1]);
+        let round = Seq::parse(&bytes).unwrap();
+        assert_eq!(round.header, seq.header);
+        assert_eq!(round.events, seq.events);
     }
 
     #[test]

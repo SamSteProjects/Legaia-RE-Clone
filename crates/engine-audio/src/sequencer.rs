@@ -59,6 +59,8 @@ struct ChannelState {
     volume: u8,
     /// Per-channel pan (CC 10), 0..=127.
     pan: u8,
+    /// MIDI pitch bend (`0x2000` = center).
+    pitch_bend: u16,
     /// Last program-change tick. Diagnostic only.
     _last_pc_tick: u64,
 }
@@ -69,6 +71,7 @@ impl Default for ChannelState {
             program: 0,
             volume: 127,
             pan: 64,
+            pitch_bend: 0x2000,
             _last_pc_tick: 0,
         }
     }
@@ -81,6 +84,7 @@ struct ActiveNote {
     channel: u8,
     key: u8,
     voice: u8,
+    program: u8,
 }
 
 /// Sequencer state machine. One per playing SEQ.
@@ -131,6 +135,10 @@ pub struct Sequencer {
     active: Vec<ActiveNote>,
     /// Master sequencer volume (libsnd `mvol`), 0..=127.
     master_vol: u8,
+    /// Optional preview override for reverb routing. `None` lets the VAB
+    /// tone's own mode bits decide per voice; `Some(true/false)` forces all
+    /// future sequenced key-ons wet/dry for auditioning.
+    reverb_send_override: Option<bool>,
 }
 
 impl Sequencer {
@@ -159,12 +167,26 @@ impl Sequencer {
             channels: [ChannelState::default(); CHANNELS],
             active: Vec::new(),
             master_vol: 127,
+            reverb_send_override: None,
         }
     }
 
     /// Set the master sequencer volume (libsnd `SsSeqSetVol`). 0..=127.
     pub fn set_master_vol(&mut self, v: u8) {
         self.master_vol = v.min(127);
+    }
+
+    /// Force-enable/disable reverb routing for future sequenced key-ons.
+    /// Preview tooling uses this to audition wet/dry globally; normal BGM
+    /// playback should prefer [`Self::clear_reverb_send_override`] so VAB tone
+    /// mode bits route individual voices.
+    pub fn set_reverb_send(&mut self, on: bool) {
+        self.reverb_send_override = Some(on);
+    }
+
+    /// Let each VAB tone decide whether its voice enters the reverb send bus.
+    pub fn clear_reverb_send_override(&mut self) {
+        self.reverb_send_override = None;
     }
 
     /// Set the external loop fallback: rewinds the event index to `to` when
@@ -339,6 +361,17 @@ impl Sequencer {
         }
     }
 
+    /// Immediately clear every active voice owned by this sequencer. This is
+    /// a tool/preview teardown path; gameplay stop uses [`Self::stop`] so
+    /// releases can decay naturally.
+    pub fn reset_voices(&mut self, spu: &mut Spu) {
+        for note in self.active.drain(..) {
+            if (note.voice as usize) < spu.voices.len() {
+                spu.voices[note.voice as usize].reset();
+            }
+        }
+    }
+
     fn fire(&mut self, spu: &mut Spu, idx: usize) {
         let event = &self.seq.events[idx];
         match &event.body {
@@ -392,7 +425,10 @@ impl Sequencer {
             ChannelMessage::NoteOff { key, .. } => {
                 self.note_off(spu, ch as u8, key);
             }
-            // PolyAftertouch / ChannelAftertouch / PitchBend not yet wired.
+            ChannelMessage::PitchBend { value } => {
+                self.pitch_bend(spu, ch as u8, value);
+            }
+            // PolyAftertouch / ChannelAftertouch not yet wired.
             _ => {}
         }
     }
@@ -416,15 +452,38 @@ impl Sequencer {
         // bank further multiplies by program & tone vol.
         let combined = ((self.master_vol as u32 * cs.volume as u32 * velocity as u32) / (127 * 127))
             .min(127) as u8;
-        let ok = self
-            .bank
-            .play_note(spu, voice as usize, cs.program as usize, key, combined);
+        let ok = self.bank.play_note_with_bend(
+            spu,
+            voice as usize,
+            cs.program as usize,
+            key,
+            combined,
+            cs.pitch_bend,
+        );
         if ok {
+            if let Some(on) = self.reverb_send_override
+                && let Some(v) = spu.voices.get_mut(voice as usize)
+            {
+                v.set_reverb_send(on);
+            }
             self.active.push(ActiveNote {
                 channel,
                 key,
                 voice,
+                program: cs.program,
             });
+        }
+    }
+
+    fn pitch_bend(&mut self, spu: &mut Spu, channel: u8, value: u16) {
+        let value = value.min(0x3FFF);
+        self.channels[channel as usize].pitch_bend = value;
+        for n in self.active.iter().copied().filter(|n| n.channel == channel) {
+            if let Some(pitch) = self.bank.pitch_for_note(n.program as usize, n.key, value)
+                && let Some(voice) = spu.voices.get_mut(n.voice as usize)
+            {
+                voice.pitch = pitch;
+            }
         }
     }
 

@@ -9,6 +9,7 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
+use legaia_vab::parse as parse_vab;
 use legaia_web_viewer::audio::{
     decode_vag_sample, decode_xa_in_memory, enumerate_bgm_pairs, enumerate_vabs, enumerate_xa_files,
 };
@@ -40,6 +41,47 @@ fn enumerate_audio_against_real_disc() {
         !pairs.is_empty(),
         "expected at least one BGM pair (music_01 cluster)"
     );
+    if let Some(pair) = pairs.first() {
+        eprintln!(
+            "[audio] first BGM pair PROT {} VAB 0x{:X} SEQ 0x{:X}",
+            pair.prot_index, pair.vab_offset, pair.seq_offset
+        );
+        let entry = entries
+            .iter()
+            .find(|e| e.index == pair.prot_index)
+            .expect("first pair entry");
+        let buf =
+            &prot[entry.byte_offset as usize..(entry.byte_offset + entry.size_bytes) as usize];
+        let report = parse_vab(buf, pair.vab_offset as usize).expect("first pair VAB parse");
+        for i in 0..pair.sample_count.min(10) {
+            let pcm = decode_vag_sample(&prot, &entries, pair.prot_index, pair.vab_offset, i)
+                .unwrap_or_default();
+            let max_abs = pcm
+                .iter()
+                .map(|s| s.unsigned_abs() as u32)
+                .max()
+                .unwrap_or(0);
+            let span = report.vag_samples.get(i as usize).unwrap();
+            let start = span.byte_offset;
+            let hdr = buf.get(start).copied().unwrap_or(0);
+            let flag = buf.get(start + 1).copied().unwrap_or(0);
+            let first_plausible = (0..span.size.saturating_sub(16))
+                .step_by(16)
+                .find(|delta| {
+                    let h = buf[start + delta];
+                    let f = buf[start + delta + 1];
+                    ((h >> 4) & 0x0F) <= 4 && f & !0x07 == 0
+                })
+                .unwrap_or(usize::MAX);
+            eprintln!(
+                "[audio] first BGM sample {i}: size={} off=0x{:X} first=({hdr:02X},{flag:02X}) plausible_delta={} {} mono samples, max |amp| = {max_abs}",
+                span.size,
+                span.byte_offset,
+                first_plausible,
+                pcm.len()
+            );
+        }
+    }
 
     let xa_files = enumerate_xa_files(&disc);
     eprintln!(

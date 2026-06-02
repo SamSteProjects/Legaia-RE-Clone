@@ -1,0 +1,18 @@
+[package]
+name = "legaia-asset-viewer-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "asset-viewer-desktop"
+path = "src/main.rs"
+
+[[bin]]
+name = "seq-studio-desktop"
+path = "src/seq_studio.rs"
+
+[dependencies]
+anyhow.workspace = true
+tao = "0.32"
+wry = "0.50"

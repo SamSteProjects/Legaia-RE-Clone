@@ -41,6 +41,7 @@ WIDE_PAGES: set[str] = {
     "arts",
     "monsters",
     "characters",
+    "seq-studio",
     "viewer",
     "media",
     "architecture",
@@ -86,6 +87,7 @@ PAGES: list[tuple[str, str, str, str]] = [
     ("architecture.html",          "How the layers stack",          "architecture",               "architecture.html"),
     ("quickstart.html",            "Quick start",                   "quickstart",                 "quickstart.html"),
     ("viewer.html",                "Asset viewer (WASM)",           "viewer",                     "viewer.html"),
+    ("seq-studio.html",            "SEQ Studio (WASM)",             "seq-studio",                 "seq-studio.html"),
     ("media.html",                 "Media browser (WASM)",          "media",                      "media.html"),
     ("world.html",                 "Game world",                    "world",                      "world.html"),
     ("shops.html",                 "Shops & vendors",               "shops",                      "shops.html"),
@@ -863,7 +865,7 @@ def write_gitignore(generated: list[str]) -> None:
         "# them on the GitHub Pages deploy. This manifest file is itself tracked.",
         "",
     ]
-    lines = header + sorted(generated) + [""]
+    lines = header + [f"/{path}" for path in sorted(generated)] + [""]
     (ROOT / ".gitignore").write_text("\n".join(lines))
 
 

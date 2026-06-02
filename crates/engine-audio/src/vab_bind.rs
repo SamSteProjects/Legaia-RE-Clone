@@ -14,14 +14,14 @@
 //! Pitch math follows the standard libspu key-to-pitch formula:
 //!
 //! ```text
-//!   semitones = (note - center) + (-fine_cents / 100)
+//!   semitones = (note - center) + (-fine / 128)
 //!   pitch_ratio = 2^(semitones / 12)
 //!   pitch_register = base_pitch * pitch_ratio  (clipped to 0..=0x3FFF)
 //! ```
 //!
-//! `base_pitch` is the playback pitch when `note == center`. For a 22.05 kHz
-//! VAG body played by an SPU running at 44.1 kHz internal, that's
-//! `0x1000 * 22050 / 44100 = 0x800`.
+//! `base_pitch` is the playback pitch when `note == center`: `0x1000`.
+//! The sample's intended musical rate is captured by the tone's center/fine
+//! key metadata, not by a global 22.05 kHz resampling factor.
 //!
 //! No Sony bytes - algorithm is the documented libspu surface.
 
@@ -29,15 +29,19 @@ use crate::Spu;
 use crate::spu::{
     adsr::AdsrConfig,
     ram::{SpuAllocator, TransferDirection},
-    voice::{PITCH_UNITY, SPU_INTERNAL_RATE},
+    voice::PITCH_UNITY,
 };
 use legaia_vab::{VabReport, VagAtr};
 
-/// Default sample rate of Legaia VAG bodies. The bank header doesn't carry
-/// a per-sample rate; the engine has historically used 22.05 kHz across the
-/// extracted corpus (see `crates/vab` extractor + the WAV writer that hard-
-/// codes 22050).
-pub const VAB_SAMPLE_RATE: u32 = 22_050;
+/// Default sample rate used when exporting/auditioning decoded VAG bodies as
+/// standalone PCM. The SPU consumes one decoded ADPCM sample per 44.1 kHz
+/// mixer tick when the pitch register is `0x1000`; sequenced playback still
+/// derives pitch from MIDI key versus VAB tone center/fine metadata.
+pub const VAB_SAMPLE_RATE: u32 = super::spu::voice::SPU_INTERNAL_RATE;
+
+/// VAB tone `mode` bit observed on Legaia BGM tones that should route the
+/// resulting SPU voice into the reverb send bus.
+pub const TONE_MODE_REVERB_SEND: u8 = 0x04;
 
 /// Per-VAG metadata after upload: where in SPU RAM the body lives.
 #[derive(Debug, Clone, Copy)]
@@ -78,14 +82,25 @@ impl VabBank {
                 samples.push(None);
                 continue;
             }
-            let body = &bank_buf[span.byte_offset..span.byte_offset + span.size];
+            let body = sample_body(bank_buf, report, span);
+            let Some(body) = body else {
+                log::warn!(
+                    "vab_bind: sample index {} body OOB (offset 0x{:X}, size {})",
+                    span.index,
+                    span.byte_offset,
+                    span.size
+                );
+                samples.push(None);
+                continue;
+            };
+            let body = trim_leading_bad_adpcm_blocks(body);
             // Allocate aligned to 16 (one ADPCM block).
-            match alloc.alloc(span.size as u32) {
+            match alloc.alloc(body.len() as u32) {
                 Some(addr) => {
                     spu.ram.write_at(addr, body);
                     samples.push(Some(UploadedVag {
                         addr,
-                        size: span.size as u32,
+                        size: body.len() as u32,
                     }));
                 }
                 None => {
@@ -118,6 +133,19 @@ impl VabBank {
         note: u8,
         velocity: u8,
     ) -> bool {
+        self.play_note_with_bend(spu, voice, program, note, velocity, 0x2000)
+    }
+
+    /// Play `note` with a MIDI pitch-bend value (`0x2000` = centered).
+    pub fn play_note_with_bend(
+        &self,
+        spu: &mut Spu,
+        voice: usize,
+        program: usize,
+        note: u8,
+        velocity: u8,
+        pitch_bend: u16,
+    ) -> bool {
         let Some(tones) = self.programs.get(program) else {
             return false;
         };
@@ -136,7 +164,7 @@ impl VabBank {
         if voice >= spu.voices.len() {
             return false;
         }
-        let pitch = compute_pitch(note, tone, VAB_SAMPLE_RATE, SPU_INTERNAL_RATE);
+        let pitch = pitch_register_for_tone(note, tone, pitch_bend);
         let bank_master = self.master_vol as i32;
         let prog_vol = tone.vol as i32;
         let vel = velocity as i32;
@@ -153,6 +181,7 @@ impl VabBank {
             v.vol_left = vol_l;
             v.vol_right = vol_r;
             v.adsr_cfg = AdsrConfig::from_words(tone.adsr1, tone.adsr2);
+            v.set_reverb_send(tone.mode & TONE_MODE_REVERB_SEND != 0);
         }
         let crate::spu::Spu {
             ref mut voices,
@@ -162,16 +191,68 @@ impl VabBank {
         voices[voice].key_on(ram);
         true
     }
+
+    /// Return the pitch register that would be used for this program/note at
+    /// the supplied MIDI pitch-bend value. Used to update already-sounding
+    /// voices when the SEQ emits `0xE0` events.
+    pub fn pitch_for_note(&self, program: usize, note: u8, pitch_bend: u16) -> Option<u16> {
+        let tones = self.programs.get(program)?;
+        let tone = tones.iter().find(|t| note >= t.min && note <= t.max)?;
+        Some(pitch_register_for_tone(note, tone, pitch_bend))
+    }
 }
 
-/// Compute the SPU pitch register value for `note` against `tone.center`,
-/// `tone.shift` (centi-semitones), and the source/dest sample rates.
-fn compute_pitch(note: u8, tone: &VagAtr, src_rate: u32, dst_rate: u32) -> u16 {
-    let semitones = note as f64 - tone.center as f64 - (tone.shift as i8 as f64) / 100.0;
+fn sample_body<'a>(
+    buf: &'a [u8],
+    report: &VabReport,
+    span: &legaia_vab::VagSampleSpan,
+) -> Option<&'a [u8]> {
+    buf.get(span.byte_offset..span.byte_offset.checked_add(span.size)?)
+        .or_else(|| {
+            let rel = span.byte_offset.checked_sub(report.header_offset)?;
+            buf.get(rel..rel.checked_add(span.size)?)
+        })
+}
+
+fn trim_leading_bad_adpcm_blocks(mut body: &[u8]) -> &[u8] {
+    while body.len() >= 16 {
+        let filter = (body[0] >> 4) & 0x0F;
+        if filter <= 4 {
+            break;
+        }
+        body = &body[16..];
+    }
+    body
+}
+
+/// Compute the SPU pitch register for one resolved VAB tone. Exposed for
+/// debug tooling so a selected SEQ note can show the exact pitch value that
+/// sequenced playback will write to the allocated SPU voice.
+pub fn pitch_register_for_tone(note: u8, tone: &VagAtr, pitch_bend: u16) -> u16 {
+    // PsyQ's key-to-pitch path works in 1/128-semitone fine units:
+    // ((key1*0x80 + fine1) - (key2*0x80 + fine2)) / (12*0x80).
+    // The VAB tone `shift` byte is the fine component of the sample's
+    // center key, not a cents value.
+    let fine_semitones = (tone.shift as i8 as f64) / 128.0;
+    let bend = pitch_bend_semitones(pitch_bend, tone);
+    let semitones = note as f64 - tone.center as f64 - fine_semitones + bend;
     let ratio = 2f64.powf(semitones / 12.0);
-    let base = (PITCH_UNITY as f64) * (src_rate as f64) / (dst_rate as f64);
-    let pitch = (base * ratio).round() as i64;
+    let pitch = (PITCH_UNITY as f64 * ratio).round() as i64;
     pitch.clamp(1, 0x3FFF) as u16
+}
+
+fn pitch_bend_semitones(value: u16, tone: &VagAtr) -> f64 {
+    let value = value.min(0x3FFF);
+    if value == 0x2000 {
+        return 0.0;
+    }
+    if value < 0x2000 {
+        let range = tone.pbmin.max(2) as f64;
+        -((0x2000 - value) as f64 / 0x2000 as f64) * range
+    } else {
+        let range = tone.pbmax.max(2) as f64;
+        ((value - 0x2000) as f64 / 0x1FFF as f64) * range
+    }
 }
 
 /// Split a combined volume into (left, right) based on a 0..=127 pan value
@@ -213,24 +294,47 @@ mod tests {
         }
     }
 
-    /// Note at center plays at the source/dest rate ratio.
+    /// Note at center maps to SPU pitch unity. The VAB body is already SPU
+    /// ADPCM; its musical rate is represented by tone center/fine metadata.
     #[test]
-    fn pitch_at_center_matches_rate_ratio() {
+    fn pitch_at_center_matches_spu_unity() {
         let tone = dummy_tone(60, 1, 127, 64);
-        let pitch = compute_pitch(60, &tone, 22_050, 44_100);
-        // Expected: 0x1000 * 22050/44100 = 0x800.
-        assert_eq!(pitch, 0x800);
+        let pitch = pitch_register_for_tone(60, &tone, 0x2000);
+        assert_eq!(pitch, 0x1000);
     }
 
     /// One semitone above center bumps pitch by 2^(1/12) ≈ 1.0595.
     #[test]
     fn pitch_one_semitone_above_is_higher() {
         let tone = dummy_tone(60, 1, 127, 64);
-        let p_center = compute_pitch(60, &tone, 22_050, 44_100);
-        let p_above = compute_pitch(61, &tone, 22_050, 44_100);
+        let p_center = pitch_register_for_tone(60, &tone, 0x2000);
+        let p_above = pitch_register_for_tone(61, &tone, 0x2000);
         assert!(p_above > p_center);
         let ratio = p_above as f64 / p_center as f64;
         assert!((ratio - 2f64.powf(1.0 / 12.0)).abs() < 0.001);
+    }
+
+    #[test]
+    fn tone_shift_uses_one_over_128_semitone_units() {
+        let mut tone = dummy_tone(60, 1, 127, 64);
+        tone.shift = 64;
+        let shifted = pitch_register_for_tone(60, &tone, 0x2000);
+        let center = pitch_register_for_tone(60, &dummy_tone(60, 1, 127, 64), 0x2000);
+        let ratio = shifted as f64 / center as f64;
+        assert!((ratio - 2f64.powf(-0.5 / 12.0)).abs() < 0.001);
+    }
+
+    #[test]
+    fn pitch_bend_uses_tone_bend_range() {
+        let mut tone = dummy_tone(60, 1, 127, 64);
+        tone.pbmin = 2;
+        tone.pbmax = 12;
+        let center = pitch_register_for_tone(60, &tone, 0x2000);
+        let up = pitch_register_for_tone(60, &tone, 0x3FFF);
+        let down = pitch_register_for_tone(60, &tone, 0);
+        assert!(up > center);
+        assert!(down < center);
+        assert!((up as f64 / center as f64 - 2.0).abs() < 0.01);
     }
 
     /// Pan=0 silences right; pan=127 silences left; pan=64 is roughly equal.

@@ -13,7 +13,7 @@
 use legaia_engine_audio::sequencer::Sequencer;
 use legaia_engine_audio::spu::ram::SpuAllocator;
 use legaia_engine_audio::{Spu, VabBank, render_bgm_to_pcm};
-use legaia_seq::Seq;
+use legaia_seq::{EventBody, MetaMessage, Seq};
 use legaia_vab::parse as parse_vab;
 use legaia_web_viewer::audio::enumerate_bgm_pairs;
 use legaia_web_viewer::disc::{extract_prot_dat, parse_prot_toc};
@@ -33,13 +33,19 @@ fn first_bgm_pair_renders_non_silent_pcm() {
     let pairs = enumerate_bgm_pairs(&prot, &entries);
     let pair = pairs.first().expect("at least one BGM pair");
     eprintln!(
-        "[bgm-chain] first pair: PROT {} vab=0x{:X} seq=0x{:X} {} progs / {} samples / {} BPM",
+        "[bgm-chain] first pair: PROT {} vab=0x{:X} seq=0x{:X} {} progs / {} samples / {} BPM / fx mode={} send={} source={} tone_mode=0x{:02X} prog_mode=0x{:02X} prog_attr=0x{:04X}",
         pair.prot_index,
         pair.vab_offset,
         pair.seq_offset,
         pair.program_count,
         pair.sample_count,
         pair.bpm,
+        pair.preview_reverb_mode,
+        pair.preview_reverb_send,
+        pair.effect_source,
+        pair.tone_mode_mask,
+        pair.program_mode_mask,
+        pair.program_attr_mask,
     );
 
     let e = entries
@@ -52,6 +58,27 @@ fn first_bgm_pair_renders_non_silent_pcm() {
 
     let vab_report = parse_vab(buf, pair.vab_offset as usize).expect("VAB parse");
     let seq = Seq::parse(&buf[pair.seq_offset as usize..]).expect("SEQ parse");
+    let tempos: Vec<_> = seq
+        .events
+        .iter()
+        .scan(0u64, |tick, ev| {
+            *tick += ev.delta as u64;
+            Some((*tick, &ev.body))
+        })
+        .filter_map(|(tick, body)| match body {
+            EventBody::Meta(MetaMessage::SetTempo { us_per_qn }) => {
+                Some((tick, *us_per_qn, 60_000_000.0 / *us_per_qn as f32))
+            }
+            _ => None,
+        })
+        .take(8)
+        .collect();
+    eprintln!(
+        "[bgm-chain] header tempo={} us/qn ({:.1} BPM), first tempo events={:?}",
+        seq.header.tempo_us_per_qn,
+        seq.header.bpm(),
+        tempos
+    );
 
     let mut spu = Spu::new();
     let mut alloc = SpuAllocator::new(0x1000, 0x40_000);
@@ -61,7 +88,9 @@ fn first_bgm_pair_renders_non_silent_pcm() {
         &vab_report,
         &buf[pair.vab_offset as usize..],
     );
+    spu.write_reverb_mode_byte(pair.preview_reverb_mode);
     let mut sequencer = Sequencer::new(seq, bank);
+    sequencer.clear_reverb_send_override();
 
     // Drive the sequencer for ~2 seconds of game-time. Most BGM SEQs
     // sit on a rest for a beat or two before NoteOn fires, so we need
@@ -133,7 +162,9 @@ fn offline_bgm_render_matches_wall_clock_at_44100hz() {
         &vab_report,
         &buf[pair.vab_offset as usize..],
     );
+    spu.write_reverb_mode_byte(pair.preview_reverb_mode);
     let mut sequencer = Sequencer::new(seq, bank);
+    sequencer.clear_reverb_send_override();
 
     let duration_samples = 5 * 44_100;
     let pcm = render_bgm_to_pcm(&mut sequencer, &mut spu, duration_samples);

@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 //! WebAssembly bindings for browsing a Legend of Legaia disc image in the browser.
 //!
 //! Auto-detects: full Mode2/2352 .bin disc, raw PROT.DAT, or a single TIM.
@@ -4115,7 +4116,7 @@ impl LegaiaAudio {
     }
 
     /// JSON list of every BGM pair (`pBAV` + `pQES` in the same PROT entry).
-    /// Shape: `[{ prot_index, vab_offset, seq_offset, program_count, sample_count, ppqn, bpm }, ...]`.
+    /// Shape: `[{ prot_index, vab_offset, seq_offset, program_count, sample_count, ppqn, bpm, ...effect hints }, ...]`.
     pub fn enumerate_bgm_pairs_json(&self) -> String {
         let v = audio::enumerate_bgm_pairs(&self.prot, &self.entries);
         let mut s = String::from("[");
@@ -4124,7 +4125,7 @@ impl LegaiaAudio {
                 s.push(',');
             }
             s.push_str(&format!(
-                r#"{{"prot_index":{},"vab_offset":{},"seq_offset":{},"program_count":{},"sample_count":{},"ppqn":{},"bpm":{:.1}}}"#,
+                r#"{{"prot_index":{},"vab_offset":{},"seq_offset":{},"program_count":{},"sample_count":{},"ppqn":{},"bpm":{:.1},"vab_master_vol":{},"vab_pan":{},"vab_attr1":{},"vab_attr2":{},"program_mode_mask":{},"program_attr_mask":{},"tone_mode_mask":{},"tone_nonzero_mode_count":{},"effect_source":"{}","preview_reverb_mode":{},"preview_reverb_send":{}}}"#,
                 x.prot_index,
                 x.vab_offset,
                 x.seq_offset,
@@ -4132,6 +4133,17 @@ impl LegaiaAudio {
                 x.sample_count,
                 x.ppqn,
                 x.bpm,
+                x.vab_master_vol,
+                x.vab_pan,
+                x.vab_attr1,
+                x.vab_attr2,
+                x.program_mode_mask,
+                x.program_attr_mask,
+                x.tone_mode_mask,
+                x.tone_nonzero_mode_count,
+                x.effect_source,
+                x.preview_reverb_mode,
+                x.preview_reverb_send,
             ));
         }
         s.push(']');
@@ -4220,6 +4232,129 @@ impl LegaiaAudio {
             sample_idx,
         )
         .unwrap_or_default()
+    }
+
+    /// Decode a SEQ into timeline JSON for editor-style displays.
+    /// Shape:
+    /// `{ header, total_ticks, event_count, notes: [...], loops: [...], programs: [...] }`.
+    pub fn seq_timeline_json(&self, prot_index: u32, seq_offset: u32) -> String {
+        let Some(seq) = self.parse_seq_for_export(prot_index, seq_offset) else {
+            return r#"{"error":"SEQ parse failed"}"#.into();
+        };
+        seq_timeline_json(&seq)
+    }
+
+    /// Resolve one piano-roll note id into its SEQ channel state, VAB program,
+    /// VAB tone, VAG sample, and computed SPU pitch. Unknown/unavailable fields
+    /// are emitted as JSON null so the UI can label them explicitly.
+    pub fn seq_note_voice_json(
+        &self,
+        prot_index: u32,
+        vab_offset: u32,
+        seq_offset: u32,
+        note_id: u32,
+    ) -> String {
+        let Some((vab_report, seq, _buf)) =
+            self.parse_bgm_pair_for_render(prot_index, vab_offset, seq_offset)
+        else {
+            return r#"{"error":"SEQ/VAB parse failed"}"#.into();
+        };
+        seq_note_voice_json(&vab_report, &seq, note_id)
+    }
+
+    /// Important setup/controller events near the start of the selected SEQ.
+    pub fn seq_setup_events_json(&self, prot_index: u32, seq_offset: u32) -> String {
+        let Some(seq) = self.parse_seq_for_export(prot_index, seq_offset) else {
+            return "[]".into();
+        };
+        seq_setup_events_json(&seq)
+    }
+
+    /// Trace every NoteOn through program/tone/sample resolution.
+    pub fn seq_voice_trace_json(
+        &self,
+        prot_index: u32,
+        vab_offset: u32,
+        seq_offset: u32,
+    ) -> String {
+        let Some((vab_report, seq, _buf)) =
+            self.parse_bgm_pair_for_render(prot_index, vab_offset, seq_offset)
+        else {
+            return "[]".into();
+        };
+        seq_voice_trace_json(&vab_report, &seq)
+    }
+
+    /// Render a short selected-note audition. `stage` is intentionally coarse:
+    /// 0 raw decoded sample, 1 pitched sample, 2 pitched sample with bend,
+    /// 3-5 dry SPU voice, 6 wet return only, 7 dry + wet.
+    pub fn render_note_audition_i16(
+        &self,
+        prot_index: u32,
+        vab_offset: u32,
+        seq_offset: u32,
+        note_id: u32,
+        stage: u8,
+        reverb_mode: u8,
+        interpolation: u8,
+        wet_percent: u8,
+        duration_seconds: f32,
+    ) -> Vec<i16> {
+        let Some((vab_report, seq, buf)) =
+            self.parse_bgm_pair_for_render(prot_index, vab_offset, seq_offset)
+        else {
+            return Vec::new();
+        };
+        render_note_audition(
+            vab_offset,
+            &buf,
+            &vab_report,
+            &seq,
+            note_id,
+            stage,
+            reverb_mode,
+            interpolation,
+            wet_percent,
+            duration_seconds,
+        )
+    }
+
+    /// Export a normalized SEQ byte stream in the retail Legaia header shape.
+    pub fn seq_bytes(&self, prot_index: u32, seq_offset: u32) -> Vec<u8> {
+        let Some(seq) = self.parse_seq_for_export(prot_index, seq_offset) else {
+            return Vec::new();
+        };
+        seq.to_bytes_legaia().unwrap_or_default()
+    }
+
+    /// Export a simple edited variant with NoteOn/NoteOff keys transposed by
+    /// `semitones`. This gives the studio a real write path while deeper
+    /// piano-roll editing grows around the same serializer.
+    pub fn seq_transpose_bytes(&self, prot_index: u32, seq_offset: u32, semitones: i32) -> Vec<u8> {
+        let Some(mut seq) = self.parse_seq_for_export(prot_index, seq_offset) else {
+            return Vec::new();
+        };
+        for ev in &mut seq.events {
+            if let legaia_seq::EventBody::Channel { message, .. } = &mut ev.body {
+                match message {
+                    legaia_seq::ChannelMessage::NoteOn { key, .. }
+                    | legaia_seq::ChannelMessage::NoteOff { key, .. }
+                    | legaia_seq::ChannelMessage::PolyAftertouch { key, .. } => {
+                        *key = ((*key as i32) + semitones).clamp(0, 127) as u8;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        seq.to_bytes_legaia().unwrap_or_default()
+    }
+
+    fn parse_seq_for_export(&self, prot_index: u32, seq_offset: u32) -> Option<legaia_seq::Seq> {
+        let e = self.entries.iter().find(|x| x.index == prot_index)?;
+        let off = e.byte_offset as usize;
+        let end = (e.byte_offset + e.size_bytes) as usize;
+        let buf = self.prot.get(off..end)?;
+        legaia_seq::Seq::parse(buf.get(seq_offset as usize..)?).ok()
     }
 
     /// Demux + decode an XA stream. Returns the decoded PCM of the first
@@ -4342,9 +4477,14 @@ impl LegaiaAudio {
         }
         let out = self.audio_out.as_ref().unwrap();
 
+        let effect = audio::scan_bgm_effect_hints(&vab_report, &seq);
+
         // Upload bank into the SPU model (which lives inside WebAudioOut's
-        // resampler). Then build the sequencer and attach.
+        // resampler). Then build the sequencer and attach. Retail reverb send
+        // is per SPU voice, so the default path leaves routing to VAB tone
+        // flags instead of wetting the entire SEQ globally.
         let bank = out.with_spu(|spu| {
+            spu.write_reverb_mode_byte(effect.preview_reverb_mode);
             let mut alloc = legaia_engine_audio::spu::ram::SpuAllocator::new(0x1000, 0x40_000);
             legaia_engine_audio::VabBank::upload(
                 spu,
@@ -4353,7 +4493,8 @@ impl LegaiaAudio {
                 &buf[vab_offset as usize..],
             )
         });
-        let sequencer = legaia_engine_audio::sequencer::Sequencer::new(seq, bank);
+        let mut sequencer = legaia_engine_audio::sequencer::Sequencer::new(seq, bank);
+        apply_reverb_send_route(&mut sequencer, REVERB_ROUTE_SCANNED_TONES);
         out.attach_sequencer(sequencer);
         Ok(())
     }
@@ -4424,32 +4565,328 @@ impl LegaiaAudio {
         seq_offset: u32,
         duration_seconds: f32,
     ) -> Vec<i16> {
-        let Some(e) = self.entries.iter().find(|x| x.index == prot_index) else {
+        let Some((vab_report, seq, buf)) =
+            self.parse_bgm_pair_for_render(prot_index, vab_offset, seq_offset)
+        else {
             return Vec::new();
+        };
+        let effect = audio::scan_bgm_effect_hints(&vab_report, &seq);
+        self.render_bgm_pair_with_effect(
+            vab_offset,
+            duration_seconds,
+            &buf,
+            &vab_report,
+            seq,
+            effect.preview_reverb_mode,
+            REVERB_ROUTE_SCANNED_TONES,
+            0,
+            100,
+            false,
+        )
+    }
+
+    /// Fresh SEQ Studio render path based directly on the documented
+    /// SEQ/VAB/SPU chain:
+    ///
+    /// SEQ events -> VAB instrument/tone lookup -> SPU ADPCM samples ->
+    /// pitch stepping/interpolation -> ADSR/voice mix -> stereo PCM.
+    ///
+    /// This intentionally bypasses the older SEQ Studio preview-effect
+    /// wrappers: no wetness control, no debug route, no monitor mode, no
+    /// cached desktop-specific signal path. Reverb mode uses the libspu-style
+    /// mode byte documented in `docs/subsystems/audio.md`; per-voice sends
+    /// come from VAB tone mode bit `0x04` for non-Off modes.
+    /// `reverb_mode`: 0 Off, 1 Room, 2 StudioA, 3 StudioB, 4 StudioC,
+    /// 5 Hall, 6 Space, 7 Echo, 8 Delay, 9 Pipe.
+    /// `interpolation`: 0 nearest, 1 linear, 3 PSX Gaussian.
+    /// `reverb_depth_percent`: final reverb return gain; 100 = unity.
+    /// `output_lowpass`: approximate PS1 analog/post-DAC softening.
+    /// `stereo_width_percent`: mid/side width; 100 = unchanged.
+    pub fn render_seq_studio_doc_spu_i16(
+        &self,
+        prot_index: u32,
+        vab_offset: u32,
+        seq_offset: u32,
+        duration_seconds: f32,
+        reverb_mode: u8,
+        interpolation: u8,
+        reverb_depth_percent: u16,
+        output_lowpass: bool,
+        stereo_width_percent: u8,
+    ) -> Vec<i16> {
+        self.render_seq_studio_doc_spu_i16_routed(
+            prot_index,
+            vab_offset,
+            seq_offset,
+            duration_seconds,
+            reverb_mode,
+            interpolation,
+            reverb_depth_percent,
+            output_lowpass,
+            stereo_width_percent,
+            REVERB_ROUTE_SCANNED_TONES,
+        )
+    }
+
+    /// Fresh document-based renderer with explicit diagnostic reverb routing.
+    /// `reverb_route`: 0 scanned tone sends, 1 force send, 2 dry only,
+    /// 3 wet return only, 4 bypass reverb engine, 5 reverb input monitor.
+    pub fn render_seq_studio_doc_spu_i16_routed(
+        &self,
+        prot_index: u32,
+        vab_offset: u32,
+        seq_offset: u32,
+        duration_seconds: f32,
+        reverb_mode: u8,
+        interpolation: u8,
+        reverb_depth_percent: u16,
+        output_lowpass: bool,
+        stereo_width_percent: u8,
+        reverb_route: u8,
+    ) -> Vec<i16> {
+        let Some((vab_report, seq, buf)) =
+            self.parse_bgm_pair_for_render(prot_index, vab_offset, seq_offset)
+        else {
+            return Vec::new();
+        };
+
+        render_seq_studio_doc_spu_i16_internal(
+            vab_offset,
+            duration_seconds,
+            &buf,
+            &vab_report,
+            seq,
+            reverb_mode,
+            interpolation,
+            reverb_depth_percent,
+            output_lowpass,
+            stereo_width_percent,
+            reverb_route,
+        )
+    }
+
+    /// Render BGM PCM with an explicit preview effect override. This is for
+    /// SEQ Studio auditioning while the real retail reverb setup tables are
+    /// still being mapped.
+    pub fn render_bgm_pcm_i16_with_effect(
+        &self,
+        prot_index: u32,
+        vab_offset: u32,
+        seq_offset: u32,
+        duration_seconds: f32,
+        reverb_mode: u8,
+        reverb_send: bool,
+    ) -> Vec<i16> {
+        let reverb_route = if reverb_send {
+            REVERB_ROUTE_FORCE_SEND
+        } else {
+            REVERB_ROUTE_DRY
+        };
+        self.render_bgm_pcm_i16_with_effect_route(
+            prot_index,
+            vab_offset,
+            seq_offset,
+            duration_seconds,
+            reverb_mode,
+            reverb_route,
+        )
+    }
+
+    /// Render BGM PCM with explicit reverb mode and routing overrides.
+    ///
+    /// `reverb_route`: 0 = VAB tone flags, 1 = force all voices into reverb,
+    /// 2 = force all voices dry, 3 = VAB tone flags but output wet return only.
+    pub fn render_bgm_pcm_i16_with_effect_route(
+        &self,
+        prot_index: u32,
+        vab_offset: u32,
+        seq_offset: u32,
+        duration_seconds: f32,
+        reverb_mode: u8,
+        reverb_route: u8,
+    ) -> Vec<i16> {
+        let Some((vab_report, seq, buf)) =
+            self.parse_bgm_pair_for_render(prot_index, vab_offset, seq_offset)
+        else {
+            return Vec::new();
+        };
+        self.render_bgm_pair_with_effect(
+            vab_offset,
+            duration_seconds,
+            &buf,
+            &vab_report,
+            seq,
+            reverb_mode,
+            reverb_route,
+            0,
+            100,
+            false,
+        )
+    }
+
+    /// Render BGM PCM with explicit reverb routing and voice interpolation.
+    /// `interpolation`: 0 nearest, 1 linear, 3 PSX Gaussian.
+    pub fn render_bgm_pcm_i16_with_effect_route_interp(
+        &self,
+        prot_index: u32,
+        vab_offset: u32,
+        seq_offset: u32,
+        duration_seconds: f32,
+        reverb_mode: u8,
+        reverb_route: u8,
+        interpolation: u8,
+    ) -> Vec<i16> {
+        let Some((vab_report, seq, buf)) =
+            self.parse_bgm_pair_for_render(prot_index, vab_offset, seq_offset)
+        else {
+            return Vec::new();
+        };
+        self.render_bgm_pair_with_effect(
+            vab_offset,
+            duration_seconds,
+            &buf,
+            &vab_report,
+            seq,
+            reverb_mode,
+            reverb_route,
+            interpolation,
+            100,
+            false,
+        )
+    }
+
+    /// Render BGM PCM with explicit reverb routing, voice interpolation, and
+    /// wet-return trim. `wet_percent` is clamped to 0..=100.
+    pub fn render_bgm_pcm_i16_with_effect_route_interp_wet(
+        &self,
+        prot_index: u32,
+        vab_offset: u32,
+        seq_offset: u32,
+        duration_seconds: f32,
+        reverb_mode: u8,
+        reverb_route: u8,
+        interpolation: u8,
+        wet_percent: u8,
+    ) -> Vec<i16> {
+        let Some((vab_report, seq, buf)) =
+            self.parse_bgm_pair_for_render(prot_index, vab_offset, seq_offset)
+        else {
+            return Vec::new();
+        };
+        self.render_bgm_pair_with_effect(
+            vab_offset,
+            duration_seconds,
+            &buf,
+            &vab_report,
+            seq,
+            reverb_mode,
+            reverb_route,
+            interpolation,
+            wet_percent,
+            false,
+        )
+    }
+
+    /// Render a short diagnostic pass and return dry/send/wet/final peak/RMS
+    /// values as JSON. This is for SEQ Studio reverb debugging.
+    pub fn bgm_mix_probe_json(
+        &self,
+        prot_index: u32,
+        vab_offset: u32,
+        seq_offset: u32,
+        duration_seconds: f32,
+        reverb_mode: u8,
+        reverb_route: u8,
+        interpolation: u8,
+        wet_percent: u8,
+    ) -> String {
+        let Some((vab_report, seq, buf)) =
+            self.parse_bgm_pair_for_render(prot_index, vab_offset, seq_offset)
+        else {
+            return r#"{"error":"SEQ/VAB parse failed"}"#.into();
+        };
+        bgm_mix_probe_json(
+            vab_offset,
+            duration_seconds,
+            &buf,
+            &vab_report,
+            seq,
+            reverb_mode,
+            reverb_route,
+            interpolation,
+            wet_percent,
+        )
+    }
+
+    fn parse_bgm_pair_for_render(
+        &self,
+        prot_index: u32,
+        vab_offset: u32,
+        seq_offset: u32,
+    ) -> Option<(legaia_vab::VabReport, legaia_seq::Seq, Vec<u8>)> {
+        let Some(e) = self.entries.iter().find(|x| x.index == prot_index) else {
+            return None;
         };
         let off = e.byte_offset as usize;
         let end = (e.byte_offset + e.size_bytes) as usize;
         let Some(buf) = self.prot.get(off..end) else {
-            return Vec::new();
+            return None;
         };
         let Ok(vab_report) = legaia_vab::parse(buf, vab_offset as usize) else {
-            return Vec::new();
+            return None;
         };
         let Ok(seq) = legaia_seq::Seq::parse(&buf[seq_offset as usize..]) else {
-            return Vec::new();
+            return None;
         };
+        Some((vab_report, seq, buf.to_vec()))
+    }
+
+    fn render_bgm_pair_with_effect(
+        &self,
+        vab_offset: u32,
+        duration_seconds: f32,
+        buf: &[u8],
+        vab_report: &legaia_vab::VabReport,
+        seq: legaia_seq::Seq,
+        reverb_mode: u8,
+        reverb_route: u8,
+        interpolation: u8,
+        wet_percent: u8,
+        _legacy_path: bool,
+    ) -> Vec<i16> {
         let mut spu = legaia_engine_audio::Spu::new();
+        let active_reverb_mode = if reverb_route == REVERB_ROUTE_BYPASS {
+            0
+        } else {
+            reverb_mode
+        };
+        spu.write_reverb_mode_byte(active_reverb_mode);
+        let wet_gain = ((u16::from(wet_percent.min(100)) * 0x4000) / 100) as i16;
+        spu.set_reverb_wet_gain_q14(wet_gain);
+        let interpolation_mode = legaia_engine_audio::InterpolationMode::from_u8(interpolation);
+        #[cfg(debug_assertions)]
+        eprintln!("using interpolation: {:?}", interpolation_mode);
+        spu.set_interpolation_mode(interpolation_mode);
         let mut alloc = legaia_engine_audio::spu::ram::SpuAllocator::new(0x1000, 0x40_000);
         let bank = legaia_engine_audio::VabBank::upload(
             &mut spu,
             &mut alloc,
-            &vab_report,
+            vab_report,
             &buf[vab_offset as usize..],
         );
         let mut sequencer = legaia_engine_audio::sequencer::Sequencer::new(seq, bank);
+        apply_reverb_send_route(&mut sequencer, reverb_route);
         let duration_samples =
             (duration_seconds * legaia_engine_audio::SPU_INTERNAL_RATE as f32) as usize;
-        legaia_engine_audio::render_bgm_to_pcm(&mut sequencer, &mut spu, duration_samples)
+        let mute_dry = reverb_route == REVERB_ROUTE_WET_ONLY;
+        let mute_wet = reverb_route == REVERB_ROUTE_DRY || reverb_route == REVERB_ROUTE_BYPASS;
+        legaia_engine_audio::render_bgm_to_pcm_debug_mix(
+            &mut sequencer,
+            &mut spu,
+            duration_samples,
+            mute_dry,
+            mute_wet,
+        )
     }
 
     /// Sample rate produced by [`Self::render_bgm_pcm_i16`] (the SPU's
@@ -4460,8 +4897,822 @@ impl LegaiaAudio {
     }
 }
 
+const REVERB_ROUTE_SCANNED_TONES: u8 = 0;
+const REVERB_ROUTE_FORCE_SEND: u8 = 1;
+const REVERB_ROUTE_DRY: u8 = 2;
+const REVERB_ROUTE_WET_ONLY: u8 = 3;
+const REVERB_ROUTE_BYPASS: u8 = 4;
+const REVERB_ROUTE_INPUT_MONITOR: u8 = 5;
+
+fn render_seq_studio_doc_spu_i16_internal(
+    vab_offset: u32,
+    duration_seconds: f32,
+    buf: &[u8],
+    vab_report: &legaia_vab::VabReport,
+    seq: legaia_seq::Seq,
+    reverb_mode: u8,
+    interpolation: u8,
+    reverb_depth_percent: u16,
+    output_lowpass: bool,
+    stereo_width_percent: u8,
+    reverb_route: u8,
+) -> Vec<i16> {
+    let active_reverb_mode = if reverb_route == REVERB_ROUTE_BYPASS {
+        0
+    } else {
+        reverb_mode
+    };
+    let mut spu = legaia_engine_audio::Spu::new();
+    spu.write_reverb_mode_byte(active_reverb_mode);
+    let depth = reverb_depth_percent.min(200);
+    spu.set_reverb_wet_gain_q14(((u32::from(depth) * 0x4000) / 100) as i16);
+    spu.set_interpolation_mode(legaia_engine_audio::InterpolationMode::from_u8(
+        interpolation,
+    ));
+
+    let mut alloc = legaia_engine_audio::spu::ram::SpuAllocator::new(0x1000, 0x40_000);
+    let bank = legaia_engine_audio::VabBank::upload(
+        &mut spu,
+        &mut alloc,
+        vab_report,
+        &buf[vab_offset as usize..],
+    );
+    let mut sequencer = legaia_engine_audio::sequencer::Sequencer::new(seq, bank);
+    apply_reverb_send_route(&mut sequencer, reverb_route);
+
+    let duration_samples =
+        (duration_seconds * legaia_engine_audio::SPU_INTERNAL_RATE as f32) as usize;
+    let mute_dry = reverb_route == REVERB_ROUTE_WET_ONLY;
+    let mute_wet = reverb_route == REVERB_ROUTE_DRY || reverb_route == REVERB_ROUTE_BYPASS;
+    let mut pcm = Vec::with_capacity(duration_samples * 2);
+    for _ in 0..duration_samples {
+        sequencer.tick_sample(&mut spu);
+        let p = spu.tick_probe_mix(mute_dry, mute_wet);
+        if reverb_route == REVERB_ROUTE_INPUT_MONITOR {
+            pcm.push(p.reverb_in_l);
+            pcm.push(p.reverb_in_r);
+        } else {
+            pcm.push(p.final_l);
+            pcm.push(p.final_r);
+        }
+    }
+    shape_seq_studio_output(&mut pcm, output_lowpass, stereo_width_percent);
+    pcm
+}
+
+fn shape_seq_studio_output(pcm: &mut [i16], output_lowpass: bool, stereo_width_percent: u8) {
+    let width = (stereo_width_percent.min(150) as f32) / 100.0;
+    if (width - 1.0).abs() > f32::EPSILON {
+        for frame in pcm.chunks_exact_mut(2) {
+            let l = frame[0] as f32;
+            let r = frame[1] as f32;
+            let mid = (l + r) * 0.5;
+            let side = (l - r) * 0.5 * width;
+            frame[0] = (mid + side).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+            frame[1] = (mid - side).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+        }
+    }
+
+    if output_lowpass {
+        // Approximate the soft post-DAC/analog roll-off reported in retail
+        // captures. This is intentionally a final output filter, not part of
+        // the SPU voice/interpolation model.
+        let sample_rate = legaia_engine_audio::SPU_INTERNAL_RATE as f32;
+        let mut lpf_l = BiquadLowpass::butterworth(sample_rate, 14_500.0);
+        let mut lpf_r = BiquadLowpass::butterworth(sample_rate, 14_500.0);
+        for frame in pcm.chunks_exact_mut(2) {
+            frame[0] = lpf_l.tick(frame[0] as f32);
+            frame[1] = lpf_r.tick(frame[1] as f32);
+        }
+    }
+}
+
+struct BiquadLowpass {
+    b0: f32,
+    b1: f32,
+    b2: f32,
+    a1: f32,
+    a2: f32,
+    z1: f32,
+    z2: f32,
+}
+
+impl BiquadLowpass {
+    fn butterworth(sample_rate: f32, cutoff_hz: f32) -> Self {
+        let omega = std::f32::consts::TAU * cutoff_hz / sample_rate;
+        let sin = omega.sin();
+        let cos = omega.cos();
+        let q = std::f32::consts::FRAC_1_SQRT_2;
+        let alpha = sin / (2.0 * q);
+        let b0 = (1.0 - cos) * 0.5;
+        let b1 = 1.0 - cos;
+        let b2 = (1.0 - cos) * 0.5;
+        let a0 = 1.0 + alpha;
+        let a1 = -2.0 * cos;
+        let a2 = 1.0 - alpha;
+        Self {
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+            z1: 0.0,
+            z2: 0.0,
+        }
+    }
+
+    fn tick(&mut self, sample: f32) -> i16 {
+        let out = self.b0 * sample + self.z1;
+        self.z1 = self.b1 * sample - self.a1 * out + self.z2;
+        self.z2 = self.b2 * sample - self.a2 * out;
+        out.clamp(i16::MIN as f32, i16::MAX as f32) as i16
+    }
+}
+
+fn apply_reverb_send_route(
+    sequencer: &mut legaia_engine_audio::sequencer::Sequencer,
+    reverb_route: u8,
+) {
+    match reverb_route {
+        REVERB_ROUTE_FORCE_SEND => sequencer.set_reverb_send(true),
+        REVERB_ROUTE_DRY => sequencer.set_reverb_send(false),
+        REVERB_ROUTE_BYPASS => sequencer.set_reverb_send(false),
+        _ => sequencer.clear_reverb_send_override(),
+    }
+}
+
+fn bgm_mix_probe_json(
+    vab_offset: u32,
+    duration_seconds: f32,
+    buf: &[u8],
+    vab_report: &legaia_vab::VabReport,
+    seq: legaia_seq::Seq,
+    reverb_mode: u8,
+    reverb_route: u8,
+    interpolation: u8,
+    wet_percent: u8,
+) -> String {
+    #[derive(Default)]
+    struct Meter {
+        peak_l: u32,
+        peak_r: u32,
+        sum_l: f64,
+        sum_r: f64,
+        n: f64,
+    }
+    impl Meter {
+        fn push(&mut self, l: i16, r: i16) {
+            let lf = l as f64 / 32768.0;
+            let rf = r as f64 / 32768.0;
+            self.peak_l = self.peak_l.max(l.unsigned_abs() as u32);
+            self.peak_r = self.peak_r.max(r.unsigned_abs() as u32);
+            self.sum_l += lf * lf;
+            self.sum_r += rf * rf;
+            self.n += 1.0;
+        }
+        fn json(&self) -> serde_json::Value {
+            serde_json::json!({
+                "peak_l": self.peak_l,
+                "peak_r": self.peak_r,
+                "rms_l": if self.n > 0.0 { (self.sum_l / self.n).sqrt() } else { 0.0 },
+                "rms_r": if self.n > 0.0 { (self.sum_r / self.n).sqrt() } else { 0.0 },
+            })
+        }
+    }
+
+    let active_reverb_mode = if reverb_route == REVERB_ROUTE_BYPASS {
+        0
+    } else {
+        reverb_mode
+    };
+    let mut spu = legaia_engine_audio::Spu::new();
+    spu.write_reverb_mode_byte(active_reverb_mode);
+    let wet_gain = ((u16::from(wet_percent.min(100)) * 0x4000) / 100) as i16;
+    spu.set_reverb_wet_gain_q14(wet_gain);
+    let interpolation_mode = legaia_engine_audio::InterpolationMode::from_u8(interpolation);
+    spu.set_interpolation_mode(interpolation_mode);
+    let mut alloc = legaia_engine_audio::spu::ram::SpuAllocator::new(0x1000, 0x40_000);
+    let bank = legaia_engine_audio::VabBank::upload(
+        &mut spu,
+        &mut alloc,
+        vab_report,
+        &buf[vab_offset as usize..],
+    );
+    let mut sequencer = legaia_engine_audio::sequencer::Sequencer::new(seq, bank);
+    apply_reverb_send_route(&mut sequencer, reverb_route);
+    let mute_dry = reverb_route == REVERB_ROUTE_WET_ONLY;
+    let mute_wet = reverb_route == REVERB_ROUTE_DRY || reverb_route == REVERB_ROUTE_BYPASS;
+
+    let samples = (duration_seconds * legaia_engine_audio::SPU_INTERNAL_RATE as f32) as usize;
+    let mut dry = Meter::default();
+    let mut input = Meter::default();
+    let mut wet = Meter::default();
+    let mut final_out = Meter::default();
+    for _ in 0..samples {
+        sequencer.tick_sample(&mut spu);
+        let p = spu.tick_probe_mix(mute_dry, mute_wet);
+        dry.push(p.dry_l, p.dry_r);
+        input.push(p.reverb_in_l, p.reverb_in_r);
+        wet.push(p.reverb_return_l, p.reverb_return_r);
+        final_out.push(p.final_l, p.final_r);
+    }
+
+    serde_json::json!({
+        "ui_reverb_mode": reverb_mode,
+        "active_reverb_mode": active_reverb_mode,
+        "requested_reverb_mode": reverb_mode,
+        "route": reverb_route,
+        "wet_percent": wet_percent.min(100),
+        "engine_wet_percent": wet_percent.min(100),
+        "ui_interpolation": interpolation,
+        "interpolation": interpolation,
+        "engine_interpolation": format!("{:?}", interpolation_mode),
+        "mixer_path": "STABLE",
+        "render_backend": "WASM",
+        "duration_seconds": duration_seconds,
+        "dry": dry.json(),
+        "reverb_input": input.json(),
+        "reverb_return": wet.json(),
+        "final": final_out.json(),
+    })
+    .to_string()
+}
+
 impl Default for LegaiaAudio {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[derive(Clone, Copy)]
+struct DebugChannelState {
+    program: u8,
+    volume: u8,
+    expression: u8,
+    pan: u8,
+    pitch_bend: u16,
+}
+
+impl Default for DebugChannelState {
+    fn default() -> Self {
+        Self {
+            program: 0,
+            volume: 127,
+            expression: 127,
+            pan: 64,
+            pitch_bend: 0x2000,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ResolvedNote {
+    id: u32,
+    start: u64,
+    end: Option<u64>,
+    channel: u8,
+    key: u8,
+    velocity: u8,
+    state: DebugChannelState,
+    tone_index: Option<usize>,
+}
+
+fn resolve_note(
+    report: &legaia_vab::VabReport,
+    seq: &legaia_seq::Seq,
+    wanted_id: Option<u32>,
+) -> Vec<ResolvedNote> {
+    use legaia_seq::{ChannelMessage, EventBody};
+
+    let mut tick = 0u64;
+    let mut next_id = 0u32;
+    let mut channels = [DebugChannelState::default(); 16];
+    let mut active: std::collections::HashMap<(u8, u8), Vec<ResolvedNote>> =
+        std::collections::HashMap::new();
+    let mut out = Vec::new();
+
+    for ev in &seq.events {
+        tick += ev.delta as u64;
+        let EventBody::Channel { channel, message } = ev.body else {
+            continue;
+        };
+        let ch = channel as usize;
+        match message {
+            ChannelMessage::ProgramChange { program } => channels[ch].program = program,
+            ChannelMessage::ControlChange { control, value } => match control {
+                7 => channels[ch].volume = value,
+                10 => channels[ch].pan = value,
+                11 => channels[ch].expression = value,
+                _ => {}
+            },
+            ChannelMessage::PitchBend { value } => channels[ch].pitch_bend = value.min(0x3FFF),
+            ChannelMessage::NoteOn { key, velocity } if velocity > 0 => {
+                next_id += 1;
+                let state = channels[ch];
+                let tone_index = report.tones.get(state.program as usize).and_then(|tones| {
+                    tones
+                        .iter()
+                        .position(|t| key >= t.min && key <= t.max && t.vag > 0 && t.vol > 0)
+                });
+                let note = ResolvedNote {
+                    id: next_id,
+                    start: tick,
+                    end: None,
+                    channel,
+                    key,
+                    velocity,
+                    state,
+                    tone_index,
+                };
+                active.entry((channel, key)).or_default().push(note);
+            }
+            ChannelMessage::NoteOn { key, .. } | ChannelMessage::NoteOff { key, .. } => {
+                if let Some(stack) = active.get_mut(&(channel, key))
+                    && let Some(mut note) = stack.pop()
+                {
+                    note.end = Some(tick.max(note.start + 1));
+                    if wanted_id.is_none_or(|id| id == note.id) {
+                        out.push(note);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for (_key, stack) in active {
+        for mut note in stack {
+            note.end = Some(tick.max(note.start + 1));
+            if wanted_id.is_none_or(|id| id == note.id) {
+                out.push(note);
+            }
+        }
+    }
+    out.sort_by_key(|n| n.id);
+    out
+}
+
+fn note_name(key: u8) -> String {
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    format!("{}{}", NAMES[(key % 12) as usize], key as i16 / 12 - 1)
+}
+
+fn displayed_midi_program(raw_program: u8) -> u16 {
+    u16::from(raw_program) + 1
+}
+
+fn resolved_note_json(report: &legaia_vab::VabReport, note: ResolvedNote) -> serde_json::Value {
+    use serde_json::json;
+
+    let program_index = note.state.program as usize;
+    let program = report.programs.get(program_index);
+    let tone = note.tone_index.and_then(|idx| {
+        report
+            .tones
+            .get(program_index)
+            .and_then(|tones| tones.get(idx))
+    });
+    let sample_index = tone.and_then(|t| (t.vag > 0).then_some((t.vag - 1) as usize));
+    let sample = sample_index.and_then(|idx| report.vag_samples.get(idx));
+    let pitch = tone.map(|t| {
+        legaia_engine_audio::vab_bind::pitch_register_for_tone(note.key, t, note.state.pitch_bend)
+    });
+    let reverb_send =
+        tone.map(|t| t.mode & legaia_engine_audio::vab_bind::TONE_MODE_REVERB_SEND != 0);
+
+    json!({
+        "id": note.id,
+        "start": note.start,
+        "end": note.end,
+        "duration": note.end.unwrap_or(note.start).saturating_sub(note.start).max(1),
+        "channel": note.channel,
+        "key": note.key,
+        "note_name": note_name(note.key),
+        "velocity": note.velocity,
+        "program": note.state.program,
+        "raw_seq_program": note.state.program,
+        "displayed_midi_program": displayed_midi_program(note.state.program),
+        "internal_vab_program": note.state.program,
+        "vab_program": note.state.program,
+        "vab_tone": note.tone_index,
+        "tone_min": tone.map(|t| t.min),
+        "tone_max": tone.map(|t| t.max),
+        "tone_center": tone.map(|t| t.center),
+        "tone_fine_shift": tone.map(|t| t.shift),
+        "tone_mode": tone.map(|t| t.mode),
+        "tone_reverb_send": reverb_send,
+        "sample_index": sample_index,
+        "sample_size_bytes": sample.map(|s| s.size),
+        "sample_loop": null,
+        "pitch_bend": note.state.pitch_bend,
+        "pitch_bend_range_down": tone.map(|t| t.pbmin.max(2)),
+        "pitch_bend_range_up": tone.map(|t| t.pbmax.max(2)),
+        "pitch_register": pitch,
+        "pitch_ratio": pitch.map(|p| p as f64 / legaia_engine_audio::PITCH_UNITY as f64),
+        "channel_volume": note.state.volume,
+        "channel_expression": note.state.expression,
+        "channel_pan": note.state.pan,
+        "vab_program_volume": program.map(|p| p.mvol),
+        "vab_program_pan": program.map(|p| p.mpan),
+        "vab_program_mode": program.map(|p| p.mode),
+        "vab_program_attr": program.map(|p| p.attr),
+        "tone_volume": tone.map(|t| t.vol),
+        "tone_pan": tone.map(|t| t.pan),
+        "adsr1": tone.map(|t| t.adsr1),
+        "adsr2": tone.map(|t| t.adsr2),
+        "adsr_decoded": tone.map(|t| format!("{:?}", legaia_engine_audio::AdsrConfig::from_words(t.adsr1, t.adsr2))),
+        "allocated_voice": null,
+        "notes": "approx: resolved from parsed SEQ controller state and VAB tone table; allocated_voice is only known during live playback",
+    })
+}
+
+fn seq_note_voice_json(
+    report: &legaia_vab::VabReport,
+    seq: &legaia_seq::Seq,
+    note_id: u32,
+) -> String {
+    match resolve_note(report, seq, Some(note_id)).into_iter().next() {
+        Some(note) => resolved_note_json(report, note).to_string(),
+        None => r#"{"error":"note not found"}"#.into(),
+    }
+}
+
+fn seq_voice_trace_json(report: &legaia_vab::VabReport, seq: &legaia_seq::Seq) -> String {
+    let values: Vec<_> = resolve_note(report, seq, None)
+        .into_iter()
+        .map(|note| resolved_note_json(report, note))
+        .collect();
+    serde_json::Value::Array(values).to_string()
+}
+
+fn seq_setup_events_json(seq: &legaia_seq::Seq) -> String {
+    use legaia_seq::{ChannelMessage, EventBody, MetaMessage};
+    use serde_json::json;
+
+    let first_note_tick = seq
+        .events
+        .iter()
+        .scan(0u64, |tick, ev| {
+            *tick += ev.delta as u64;
+            Some((*tick, &ev.body))
+        })
+        .find_map(|(tick, body)| match body {
+            EventBody::Channel {
+                message: ChannelMessage::NoteOn { velocity, .. },
+                ..
+            } if *velocity > 0 => Some(tick),
+            _ => None,
+        })
+        .unwrap_or(u64::MAX);
+    let early_tick_limit = first_note_tick.max(seq.header.ppqn as u64 * 4);
+    let mut tick = 0u64;
+    let mut out = Vec::new();
+    for ev in &seq.events {
+        tick += ev.delta as u64;
+        if tick > early_tick_limit && out.len() >= 64 {
+            break;
+        }
+        match &ev.body {
+            EventBody::Meta(MetaMessage::SetTempo { us_per_qn }) => out.push(json!({
+                "tick": tick, "kind": "tempo", "us_per_qn": us_per_qn,
+                "bpm": if *us_per_qn == 0 { 0.0 } else { 60_000_000.0 / *us_per_qn as f64 },
+            })),
+            EventBody::Channel { channel, message } => match *message {
+                ChannelMessage::ProgramChange { program } => out.push(json!({
+                    "tick": tick, "channel": channel, "kind": "program", "program": program,
+                })),
+                ChannelMessage::ControlChange { control, value } => {
+                    let name = match control {
+                        6 => "data-entry",
+                        7 => "volume",
+                        10 => "pan",
+                        11 => "expression",
+                        38 => "data-entry-lsb",
+                        98 => "nrpn-lsb",
+                        99 => "nrpn-msb",
+                        100 => "rpn-lsb",
+                        101 => "rpn-msb",
+                        _ => "control",
+                    };
+                    out.push(json!({
+                        "tick": tick, "channel": channel, "kind": name,
+                        "control": control, "value": value,
+                    }));
+                }
+                ChannelMessage::PitchBend { value } => out.push(json!({
+                    "tick": tick, "channel": channel, "kind": "pitch-bend", "value": value,
+                })),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    serde_json::Value::Array(out).to_string()
+}
+
+fn render_note_audition(
+    vab_offset: u32,
+    buf: &[u8],
+    report: &legaia_vab::VabReport,
+    seq: &legaia_seq::Seq,
+    note_id: u32,
+    stage: u8,
+    reverb_mode: u8,
+    interpolation: u8,
+    wet_percent: u8,
+    duration_seconds: f32,
+) -> Vec<i16> {
+    let Some(note) = resolve_note(report, seq, Some(note_id)).into_iter().next() else {
+        return Vec::new();
+    };
+    let Some(tone_index) = note.tone_index else {
+        return Vec::new();
+    };
+    let Some(tone) = report
+        .tones
+        .get(note.state.program as usize)
+        .and_then(|tones| tones.get(tone_index))
+        .copied()
+    else {
+        return Vec::new();
+    };
+    let sample_idx = if tone.vag > 0 {
+        (tone.vag - 1) as u32
+    } else {
+        return Vec::new();
+    };
+
+    if stage == 0 || stage == 1 || stage == 2 {
+        let mono =
+            audio::decode_vag_sample_from_report(buf, report, sample_idx).unwrap_or_default();
+        let ratio = if stage == 1 || stage == 2 {
+            let bend = if stage == 1 {
+                0x2000
+            } else {
+                note.state.pitch_bend
+            };
+            legaia_engine_audio::vab_bind::pitch_register_for_tone(note.key, &tone, bend) as f64
+                / legaia_engine_audio::PITCH_UNITY as f64
+        } else {
+            audio::VAB_SAMPLE_RATE as f64 / legaia_engine_audio::SPU_INTERNAL_RATE as f64
+        };
+        return resample_mono_to_stereo(&mono, ratio, interpolation, duration_seconds);
+    }
+
+    let mut spu = legaia_engine_audio::Spu::new();
+    spu.write_reverb_mode_byte(reverb_mode);
+    let wet_gain = ((u16::from(wet_percent.min(100)) * 0x4000) / 100) as i16;
+    spu.set_reverb_wet_gain_q14(wet_gain);
+    spu.set_interpolation_mode(legaia_engine_audio::InterpolationMode::from_u8(
+        interpolation,
+    ));
+    let mut alloc = legaia_engine_audio::spu::ram::SpuAllocator::new(0x1000, 0x40_000);
+    let bank = legaia_engine_audio::VabBank::upload(
+        &mut spu,
+        &mut alloc,
+        report,
+        &buf[vab_offset as usize..],
+    );
+    let _ = bank.play_note_with_bend(
+        &mut spu,
+        0,
+        note.state.program as usize,
+        note.key,
+        note.velocity,
+        note.state.pitch_bend,
+    );
+    if let Some(v) = spu.voices.get_mut(0) {
+        match stage {
+            3 => {
+                v.vol_left = 0x3FFF;
+                v.vol_right = 0x3FFF;
+                v.set_reverb_send(false);
+            }
+            6 | 7 => v.set_reverb_send(true),
+            _ => v.set_reverb_send(false),
+        }
+    }
+    match stage {
+        6 => {
+            if let Some(v) = spu.voices.get_mut(0) {
+                v.set_reverb_send(true);
+            }
+        }
+        7 => {
+            if let Some(v) = spu.voices.get_mut(0) {
+                v.set_reverb_send(true);
+            }
+        }
+        _ => {
+            if let Some(v) = spu.voices.get_mut(0) {
+                v.set_reverb_send(false);
+            }
+        }
+    }
+    let duration_samples =
+        (duration_seconds * legaia_engine_audio::SPU_INTERNAL_RATE as f32).max(1.0) as usize;
+    let mute_dry = stage == 6;
+    let mute_wet = stage < 6;
+    let mut out = Vec::with_capacity(duration_samples * 2);
+    for _ in 0..duration_samples {
+        let (l, r) = spu.tick_debug_mix(mute_dry, mute_wet);
+        out.push(l);
+        out.push(r);
+    }
+    out
+}
+
+fn resample_mono_to_stereo(
+    mono: &[i16],
+    step: f64,
+    interpolation: u8,
+    duration_seconds: f32,
+) -> Vec<i16> {
+    if mono.is_empty() {
+        return Vec::new();
+    }
+    let frames =
+        (duration_seconds * legaia_engine_audio::SPU_INTERNAL_RATE as f32).max(1.0) as usize;
+    let mut out = Vec::with_capacity(frames * 2);
+    let mut pos = 0.0f64;
+    for _ in 0..frames {
+        let idx = pos.floor() as usize;
+        let frac = pos - idx as f64;
+        let s = match interpolation {
+            1 => {
+                let a = mono.get(idx).copied().unwrap_or(0) as f64;
+                let b = mono.get(idx + 1).copied().unwrap_or(a as i16) as f64;
+                (a + (b - a) * frac).round() as i16
+            }
+            3 => gaussian_resample(mono, idx, frac),
+            _ => mono.get(idx).copied().unwrap_or(0),
+        };
+        out.push(s);
+        out.push(s);
+        pos += step.max(0.0001);
+        if pos as usize >= mono.len() {
+            break;
+        }
+    }
+    out
+}
+
+fn gaussian_resample(mono: &[i16], idx: usize, frac: f64) -> i16 {
+    let at = |i: isize| -> i16 {
+        mono.get(i.clamp(0, mono.len().saturating_sub(1) as isize) as usize)
+            .copied()
+            .unwrap_or(0)
+    };
+    let counter_frac = (frac.clamp(0.0, 0.999_999) * 4096.0) as u32;
+    let interp = legaia_engine_audio::spu::gaussian::interpolation_index(counter_frac);
+    legaia_engine_audio::spu::gaussian::interpolate(
+        at(idx as isize - 3),
+        at(idx as isize - 2),
+        at(idx as isize - 1),
+        at(idx as isize),
+        interp,
+    )
+}
+
+#[cfg(test)]
+mod seq_studio_debug_tests {
+    use super::displayed_midi_program;
+
+    #[test]
+    fn midi_program_display_is_one_based_but_vab_index_is_raw() {
+        assert_eq!(displayed_midi_program(0), 1);
+        assert_eq!(displayed_midi_program(5), 6);
+        assert_eq!(displayed_midi_program(127), 128);
+    }
+}
+
+fn seq_timeline_json(seq: &legaia_seq::Seq) -> String {
+    use legaia_seq::{ChannelMessage, EventBody, MetaMessage};
+    use serde_json::json;
+
+    #[derive(Clone, Copy)]
+    struct ActiveNote {
+        start: u64,
+        velocity: u8,
+        program: u8,
+    }
+
+    let mut tick = 0u64;
+    let mut programs = [0u8; 16];
+    let mut active: std::collections::HashMap<(u8, u8), Vec<ActiveNote>> =
+        std::collections::HashMap::new();
+    let mut notes = Vec::new();
+    let mut loops = Vec::new();
+    let mut program_events = Vec::new();
+    let mut tempo_events = Vec::new();
+    let mut note_count = 0u32;
+    let mut effective_tempo = seq.header.tempo_us_per_qn;
+
+    for ev in &seq.events {
+        tick += ev.delta as u64;
+        match &ev.body {
+            EventBody::Channel { channel, message } => match *message {
+                ChannelMessage::ProgramChange { program } => {
+                    programs[*channel as usize] = program;
+                    program_events.push(json!({
+                        "tick": tick,
+                        "channel": channel,
+                        "program": program,
+                    }));
+                }
+                ChannelMessage::NoteOn { key, velocity } if velocity > 0 => {
+                    active.entry((*channel, key)).or_default().push(ActiveNote {
+                        start: tick,
+                        velocity,
+                        program: programs[*channel as usize],
+                    });
+                }
+                ChannelMessage::NoteOn { key, .. } | ChannelMessage::NoteOff { key, .. } => {
+                    if let Some(stack) = active.get_mut(&(*channel, key))
+                        && let Some(on) = stack.pop()
+                    {
+                        note_count += 1;
+                        notes.push(json!({
+                            "id": note_count,
+                            "channel": channel,
+                            "key": key,
+                            "velocity": on.velocity,
+                            "program": on.program,
+                            "start": on.start,
+                            "end": tick.max(on.start + 1),
+                            "duration": tick.saturating_sub(on.start).max(1),
+                        }));
+                    }
+                }
+                ChannelMessage::ControlChange { control: 99, value }
+                    if value == 20 || value == 30 =>
+                {
+                    loops.push(json!({
+                        "tick": tick,
+                        "channel": channel,
+                        "kind": if value == 20 { "start" } else { "forever" },
+                    }));
+                }
+                _ => {}
+            },
+            EventBody::Meta(MetaMessage::SetTempo { us_per_qn }) => {
+                if *us_per_qn > 0 && effective_tempo == seq.header.tempo_us_per_qn {
+                    effective_tempo = *us_per_qn;
+                }
+                tempo_events.push(json!({
+                    "tick": tick,
+                    "us_per_qn": us_per_qn,
+                    "bpm": if *us_per_qn == 0 { 0.0 } else { 60_000_000.0 / *us_per_qn as f64 },
+                }));
+            }
+            _ => {}
+        }
+    }
+
+    for ((channel, key), stack) in active {
+        for on in stack {
+            note_count += 1;
+            notes.push(json!({
+                "id": note_count,
+                "channel": channel,
+                "key": key,
+                "velocity": on.velocity,
+                "program": on.program,
+                "start": on.start,
+                "end": tick.max(on.start + 1),
+                "duration": tick.saturating_sub(on.start).max(1),
+                "open": true,
+            }));
+        }
+    }
+
+    notes.sort_by_key(|n| {
+        (
+            n.get("start").and_then(|v| v.as_u64()).unwrap_or(0),
+            n.get("key").and_then(|v| v.as_u64()).unwrap_or(0),
+        )
+    });
+
+    let summary = seq.event_summary();
+    json!({
+        "header": {
+            "ppqn": seq.header.ppqn,
+            "tempo_us_per_qn": seq.header.tempo_us_per_qn,
+            "bpm": seq.header.bpm(),
+            "effective_tempo_us_per_qn": effective_tempo,
+            "effective_bpm": if effective_tempo == 0 { 0.0 } else { 60_000_000.0 / effective_tempo as f32 },
+            "time_sig_num": seq.header.time_sig_num,
+            "time_sig_denom_pow2": seq.header.time_sig_denom_pow2,
+        },
+        "summary": summary,
+        "total_ticks": seq.total_ticks(),
+        "event_count": seq.events.len(),
+        "notes": notes,
+        "loops": loops,
+        "programs": program_events,
+        "tempos": tempo_events,
+    })
+    .to_string()
 }

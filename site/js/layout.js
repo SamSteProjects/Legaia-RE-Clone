@@ -24,6 +24,7 @@ const NAV = [
     label: 'explore',
     items: [
       { href: 'viewer.html',                    text: 'Asset viewer',             key: 'viewer' },
+      { href: 'seq-studio.html',                text: 'SEQ Studio',               key: 'seq-studio' },
       { href: 'media.html',                     text: 'Media browser',            key: 'media' },
       { href: 'world.html',                     text: 'Game world',               key: 'world' },
       { href: 'shops.html',                     text: 'Shops & vendors',          key: 'shops' },
