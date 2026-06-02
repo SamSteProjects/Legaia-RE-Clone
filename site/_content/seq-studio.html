@@ -231,7 +231,7 @@ canvas.seq-canvas {
                 <option value="5">Reverb Input Monitor</option>
               </select>
             </label>
-            <label>depth <input class="seq-control" id="seq-reverb-depth" type="range" min="0" max="200" value="140" disabled></label>
+            <label>wet depth <input class="seq-control" id="seq-reverb-depth" type="range" min="0" max="200" value="140" disabled></label>
             <span id="seq-reverb-depth-label" class="seq-muted">140%</span>
             <label>width <input class="seq-control" id="seq-width" type="range" min="60" max="120" value="90" disabled></label>
             <span id="seq-width-label" class="seq-muted">90%</span>
@@ -243,6 +243,7 @@ canvas.seq-canvas {
             <button class="seq-control" id="seq-clear-cache" disabled>Clear Audio Cache</button>
           </div>
           <div class="seq-status" id="seq-playback-status">Load a BGM pair to play.</div>
+          <div class="seq-status seq-muted">Depth affects Scanned/Force/Wet Return routes, not Input Monitor or Bypass.</div>
           <div class="seq-status" id="seq-engine-status">engine: idle</div>
         </div>
       </section>
@@ -314,6 +315,7 @@ let lastRenderedSeconds = 0;
 let renderCache = new Map();
 let cacheStatus = "clean";
 let lastCacheReason = "initial";
+let engineProbeTimer = null;
 let rollZoom = 1;
 let rollStartTick = 0;
 let rollColorMode = "channel";
@@ -476,6 +478,10 @@ function selectedReverbDepth() {
   return Number($reverbDepth.value || 100);
 }
 
+function selectedReverbWetGainQ14() {
+  return Math.min(0x7FFF, Math.round(selectedReverbDepth() * 0x4000 / 100));
+}
+
 function selectedWidth() {
   return Number($width.value || 100);
 }
@@ -597,7 +603,7 @@ function renderBgm(seconds = RENDER_SECONDS) {
     console.log("render cache hit");
     return renderCache.get(key);
   }
-  console.log(`render regenerated: ${seconds}s, DuckStation-shaped document SPU path, route ${routeName()}, reverb ${reverbName()} depth ${selectedReverbDepth()}%, interpolation ${interpName()}, lowpass ${$lowpass.checked}, width ${selectedWidth()}%`);
+  console.log(`render regenerated: ${seconds}s, DuckStation-shaped document SPU path, route ${routeName()}, reverb ${reverbName()} wet depth ${selectedReverbDepth()}% q14 ${selectedReverbWetGainQ14()}, interpolation ${interpName()}, lowpass ${$lowpass.checked}, width ${selectedWidth()}%`);
   setCacheStatus("regenerated", "render settings changed or cache empty");
   let pcm;
   if (audio.render_seq_studio_doc_spu_i16_routed) {
@@ -634,13 +640,24 @@ async function updateEngineProbe() {
     selectedReverb(),
     selectedRoute(),
     selectedInterp(),
-    Math.min(100, selectedReverbDepth())
+    selectedReverbDepth()
   ));
   const fmt = (m) => `${m?.peak_l ?? 0}/${m?.peak_r ?? 0} rms ${(m?.rms_l ?? 0).toFixed(3)}/${(m?.rms_r ?? 0).toFixed(3)}`;
   const wetSilent = (probe.reverb_return?.peak_l || 0) === 0 && (probe.reverb_return?.peak_r || 0) === 0;
+  const depthMismatch = Number(probe.render_call_depth_percent ?? -1) !== selectedReverbDepth();
   $engineStatus.textContent =
     `engine: backend WASM, mixer NEW, mode ${reverbName(probe.active_reverb_mode)}, route ${routeName()}, interp ${probe.engine_interpolation || interpName()}; ` +
-    `dry ${fmt(probe.dry)}; send ${fmt(probe.reverb_input)}; wet ${fmt(probe.reverb_return)}; final ${fmt(probe.final)}${wetSilent ? "; wet return is silent" : ""}`;
+    `UI depth ${selectedReverbDepth()}%, render depth ${probe.render_call_depth_percent ?? "?"}%, wet gain q14 ${probe.engine_wet_gain_q14 ?? "?"}; ` +
+    `dry ${fmt(probe.dry)}; send ${fmt(probe.reverb_input)}; wet ${fmt(probe.reverb_return)}; final ${fmt(probe.final)}` +
+    `${wetSilent ? "; wet return is silent" : ""}${depthMismatch ? "; depth UI value is not reaching renderer" : ""}`;
+}
+
+function scheduleEngineProbe() {
+  if (!selected) return;
+  clearTimeout(engineProbeTimer);
+  engineProbeTimer = setTimeout(() => {
+    updateEngineProbe().catch((err) => console.warn("mix probe failed", err));
+  }, 120);
 }
 
 function downloadBytes(bytes, name, type = "application/octet-stream") {
@@ -718,9 +735,11 @@ function pcmDiffStats(a, b) {
 function reportWarnings(report) {
   const warnings = [];
   if (report.checks?.wet_return_silent) warnings.push("wet return is silent");
-  if (report.checks?.wetness_not_affecting_final_mix) warnings.push("wetness not affecting final mix");
+  if (report.checks?.wetness_not_affecting_final_mix) warnings.push("depth is not affecting final mix");
+  if (report.checks?.scanned_depth_not_affecting_final_mix) warnings.push("Scanned Tone Send depth is not affecting final mix");
+  if (report.checks?.force_depth_not_affecting_final_mix) warnings.push("Force Send depth is not affecting final mix");
   if (report.checks?.dry_only_differs_from_bypass) warnings.push("Dry Only differs from Bypass");
-  if (report.checks?.wet0_differs_from_dry) warnings.push("Full Mix wetness 0 differs from Dry Only");
+  if (report.checks?.wet0_differs_from_dry) warnings.push("Full Mix wet depth 0 differs from Dry Only");
   if (report.checks?.interpolation_not_affecting_renderer) warnings.push("interpolation setting not affecting renderer");
   return warnings;
 }
@@ -769,7 +788,7 @@ function mixProbe(seconds, route, depthPercent) {
     selectedReverb(),
     route,
     selectedInterp(),
-    Math.min(100, depthPercent)
+    depthPercent
   ));
 }
 
@@ -783,8 +802,12 @@ async function exportRouteDebug() {
     { key: "dry-only", label: "Dry Only", route: 2, depth: 100 },
     { key: "reverb-input-monitor", label: "Reverb Input Monitor", route: 5, depth: 100 },
     { key: "wet-return-only", label: "Wet Return Only", route: 3, depth: 100 },
-    { key: "full-mix-wet0", label: "Full Mix wetness 0", route: 0, depth: 0 },
-    { key: "full-mix-wet100", label: "Full Mix wetness 100", route: 0, depth: 100 }
+    { key: "scanned-depth0", label: "Scanned Tone Send depth 0", route: 0, depth: 0 },
+    { key: "scanned-depth100", label: "Scanned Tone Send depth 100", route: 0, depth: 100 },
+    { key: "force-depth0", label: "Force Send depth 0", route: 1, depth: 0 },
+    { key: "force-depth100", label: "Force Send depth 100", route: 1, depth: 100 },
+    { key: "full-mix-wet0", label: "Full Mix wet depth 0", route: 0, depth: 0 },
+    { key: "full-mix-wet100", label: "Full Mix wet depth 100", route: 0, depth: 100 }
   ];
   $waveStatus.textContent = "Exporting 10s route debug WAVs...";
   const rendered = {};
@@ -793,6 +816,8 @@ async function exportRouteDebug() {
     duration_seconds: seconds,
     reverb_mode: selectedReverb(),
     reverb_mode_name: reverbName(),
+    ui_depth_slider_percent: selectedReverbDepth(),
+    ui_depth_slider_wet_gain_q14: selectedReverbWetGainQ14(),
     interpolation: selectedInterp(),
     interpolation_name: interpName(),
     output_lowpass: $lowpass.checked,
@@ -830,6 +855,8 @@ async function exportRouteDebug() {
   report.diffs.bypass_vs_dry_only = pcmDiffStats(rendered["bypass"], rendered["dry-only"]);
   report.diffs.dry_only_vs_full_mix_wet0 = pcmDiffStats(rendered["dry-only"], rendered["full-mix-wet0"]);
   report.diffs.full_mix_wet0_vs_wet100 = pcmDiffStats(rendered["full-mix-wet0"], rendered["full-mix-wet100"]);
+  report.diffs.scanned_depth0_vs_depth100 = pcmDiffStats(rendered["scanned-depth0"], rendered["scanned-depth100"]);
+  report.diffs.force_depth0_vs_depth100 = pcmDiffStats(rendered["force-depth0"], rendered["force-depth100"]);
   report.diffs.input_monitor_vs_wet_return = pcmDiffStats(rendered["reverb-input-monitor"], rendered["wet-return-only"]);
   const wetStats = report.cases["wet-return-only"].output;
   const inputStats = report.cases["reverb-input-monitor"].output;
@@ -837,6 +864,8 @@ async function exportRouteDebug() {
   report.checks.wet0_differs_from_dry = !report.diffs.dry_only_vs_full_mix_wet0.nearly_identical;
   report.checks.wet_return_silent = wetStats.peak_l === 0 && wetStats.peak_r === 0;
   report.checks.wetness_not_affecting_final_mix = !report.checks.wet_return_silent && report.diffs.full_mix_wet0_vs_wet100.nearly_identical;
+  report.checks.scanned_depth_not_affecting_final_mix = !report.checks.wet_return_silent && report.diffs.scanned_depth0_vs_depth100.nearly_identical;
+  report.checks.force_depth_not_affecting_final_mix = !report.checks.wet_return_silent && report.diffs.force_depth0_vs_depth100.nearly_identical;
   report.checks.input_monitor_contains_wet_output = false;
   report.checks.wet_return_only_contains_dry_mix = false;
   report.warnings = reportWarnings(report);
@@ -1283,28 +1312,37 @@ $seek.addEventListener("change", async () => {
 });
 $interp.addEventListener("change", () => {
   invalidateAudioCache("interpolation mode changed");
+  scheduleEngineProbe();
   $waveStatus.textContent = `Interpolation set to ${interpName()}. Next playback/render will regenerate audio.`;
 });
 $reverb.addEventListener("change", () => {
   invalidateAudioCache("reverb mode changed");
+  scheduleEngineProbe();
   document.getElementById("stat-effect").textContent = `doc SPU chain, ${reverbName()}, ${routeName()}`;
   $waveStatus.textContent = `Reverb set to ${reverbName()}. Next playback/render will regenerate audio.`;
 });
 $route.addEventListener("change", () => {
   invalidateAudioCache("route changed");
+  scheduleEngineProbe();
   document.getElementById("stat-effect").textContent = `doc SPU chain, ${reverbName()}, ${routeName()}`;
   $waveStatus.textContent = `Route set to ${routeName()}. Next playback/render will regenerate audio.`;
 });
 [$reverbDepth, $width, $lowpass].forEach((el) => {
   el.addEventListener("input", () => {
-    invalidateAudioCache(el === $reverbDepth ? "wetness changed" : el === $width ? "stereo width changed" : "output lowpass changed");
+    invalidateAudioCache(el === $reverbDepth ? "depth changed" : el === $width ? "stereo width changed" : "output lowpass changed");
     updateOutputLabels();
-    $waveStatus.textContent = "Output shaping changed. Next playback/render will regenerate audio.";
+    if (el === $reverbDepth) scheduleEngineProbe();
+    $waveStatus.textContent = el === $reverbDepth
+      ? "Wet depth changed. Depth changes apply on next render/play."
+      : "Output shaping changed. Next playback/render will regenerate audio.";
   });
   el.addEventListener("change", () => {
-    invalidateAudioCache(el === $reverbDepth ? "wetness changed" : el === $width ? "stereo width changed" : "output lowpass changed");
+    invalidateAudioCache(el === $reverbDepth ? "depth changed" : el === $width ? "stereo width changed" : "output lowpass changed");
     updateOutputLabels();
-    $waveStatus.textContent = "Output shaping changed. Next playback/render will regenerate audio.";
+    if (el === $reverbDepth) scheduleEngineProbe();
+    $waveStatus.textContent = el === $reverbDepth
+      ? "Wet depth changed. Depth changes apply on next render/play."
+      : "Output shaping changed. Next playback/render will regenerate audio.";
   });
 });
 $clearCache.addEventListener("click", clearAudioCache);

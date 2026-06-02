@@ -23,7 +23,7 @@ export class LegaiaAudio {
      * Render a short diagnostic pass and return dry/send/wet/final peak/RMS
      * values as JSON. This is for SEQ Studio reverb debugging.
      */
-    bgm_mix_probe_json(prot_index: number, vab_offset: number, seq_offset: number, duration_seconds: number, reverb_mode: number, reverb_route: number, interpolation: number, wet_percent: number): string;
+    bgm_mix_probe_json(prot_index: number, vab_offset: number, seq_offset: number, duration_seconds: number, reverb_mode: number, reverb_route: number, interpolation: number, reverb_depth_percent: number): string;
     /**
      * Sample rate produced by [`Self::render_bgm_pcm_i16`] (the SPU's
      * internal 44.1 kHz). Surfaced so the JS side can build a correct

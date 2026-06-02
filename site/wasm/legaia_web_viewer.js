@@ -40,14 +40,14 @@ export class LegaiaAudio {
      * @param {number} reverb_mode
      * @param {number} reverb_route
      * @param {number} interpolation
-     * @param {number} wet_percent
+     * @param {number} reverb_depth_percent
      * @returns {string}
      */
-    bgm_mix_probe_json(prot_index, vab_offset, seq_offset, duration_seconds, reverb_mode, reverb_route, interpolation, wet_percent) {
+    bgm_mix_probe_json(prot_index, vab_offset, seq_offset, duration_seconds, reverb_mode, reverb_route, interpolation, reverb_depth_percent) {
         let deferred1_0;
         let deferred1_1;
         try {
-            const ret = wasm.legaiaaudio_bgm_mix_probe_json(this.__wbg_ptr, prot_index, vab_offset, seq_offset, duration_seconds, reverb_mode, reverb_route, interpolation, wet_percent);
+            const ret = wasm.legaiaaudio_bgm_mix_probe_json(this.__wbg_ptr, prot_index, vab_offset, seq_offset, duration_seconds, reverb_mode, reverb_route, interpolation, reverb_depth_percent);
             deferred1_0 = ret[0];
             deferred1_1 = ret[1];
             return getStringFromWasm0(ret[0], ret[1]);

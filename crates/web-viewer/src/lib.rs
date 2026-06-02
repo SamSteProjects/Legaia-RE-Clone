@@ -4798,7 +4798,7 @@ impl LegaiaAudio {
         reverb_mode: u8,
         reverb_route: u8,
         interpolation: u8,
-        wet_percent: u8,
+        reverb_depth_percent: u16,
     ) -> String {
         let Some((vab_report, seq, buf)) =
             self.parse_bgm_pair_for_render(prot_index, vab_offset, seq_offset)
@@ -4814,7 +4814,7 @@ impl LegaiaAudio {
             reverb_mode,
             reverb_route,
             interpolation,
-            wet_percent,
+            reverb_depth_percent,
         )
     }
 
@@ -4862,7 +4862,7 @@ impl LegaiaAudio {
             reverb_mode
         };
         spu.write_reverb_mode_byte(active_reverb_mode);
-        let wet_gain = ((u16::from(wet_percent.min(100)) * 0x4000) / 100) as i16;
+        let wet_gain = reverb_depth_to_q14(u16::from(wet_percent.min(100)));
         spu.set_reverb_wet_gain_q14(wet_gain);
         let interpolation_mode = legaia_engine_audio::InterpolationMode::from_u8(interpolation);
         #[cfg(debug_assertions)]
@@ -4934,6 +4934,10 @@ const REVERB_ROUTE_WET_ONLY: u8 = 3;
 const REVERB_ROUTE_BYPASS: u8 = 4;
 const REVERB_ROUTE_INPUT_MONITOR: u8 = 5;
 
+fn reverb_depth_to_q14(depth_percent: u16) -> i16 {
+    ((u32::from(depth_percent.min(200)) * 0x4000) / 100).min(0x7FFF) as i16
+}
+
 fn render_seq_studio_doc_spu_i16_internal(
     vab_offset: u32,
     duration_seconds: f32,
@@ -4956,7 +4960,7 @@ fn render_seq_studio_doc_spu_i16_internal(
     let mut spu = legaia_engine_audio::Spu::new();
     spu.write_reverb_mode_byte(active_reverb_mode);
     let depth = reverb_depth_percent.min(200);
-    spu.set_reverb_wet_gain_q14(((u32::from(depth) * 0x4000) / 100) as i16);
+    spu.set_reverb_wet_gain_q14(reverb_depth_to_q14(depth));
     spu.set_interpolation_mode(legaia_engine_audio::InterpolationMode::from_u8(
         interpolation,
     ));
@@ -5074,7 +5078,7 @@ fn bgm_mix_probe_json(
     reverb_mode: u8,
     reverb_route: u8,
     interpolation: u8,
-    wet_percent: u8,
+    reverb_depth_percent: u16,
 ) -> String {
     #[derive(Default)]
     struct Meter {
@@ -5111,7 +5115,8 @@ fn bgm_mix_probe_json(
     };
     let mut spu = legaia_engine_audio::Spu::new();
     spu.write_reverb_mode_byte(active_reverb_mode);
-    let wet_gain = ((u16::from(wet_percent.min(100)) * 0x4000) / 100) as i16;
+    let depth = reverb_depth_percent.min(200);
+    let wet_gain = reverb_depth_to_q14(depth);
     spu.set_reverb_wet_gain_q14(wet_gain);
     let interpolation_mode = legaia_engine_audio::InterpolationMode::from_u8(interpolation);
     spu.set_interpolation_mode(interpolation_mode);
@@ -5146,8 +5151,10 @@ fn bgm_mix_probe_json(
         "active_reverb_mode": active_reverb_mode,
         "requested_reverb_mode": reverb_mode,
         "route": reverb_route,
-        "wet_percent": wet_percent.min(100),
-        "engine_wet_percent": wet_percent.min(100),
+        "ui_depth_percent": reverb_depth_percent,
+        "render_call_depth_percent": depth,
+        "engine_depth_percent": depth,
+        "engine_wet_gain_q14": wet_gain,
         "ui_interpolation": interpolation,
         "interpolation": interpolation,
         "engine_interpolation": format!("{:?}", interpolation_mode),
@@ -5487,7 +5494,7 @@ fn render_note_audition(
 
     let mut spu = legaia_engine_audio::Spu::new();
     spu.write_reverb_mode_byte(reverb_mode);
-    let wet_gain = ((u16::from(wet_percent.min(100)) * 0x4000) / 100) as i16;
+    let wet_gain = reverb_depth_to_q14(u16::from(wet_percent.min(100)));
     spu.set_reverb_wet_gain_q14(wet_gain);
     spu.set_interpolation_mode(legaia_engine_audio::InterpolationMode::from_u8(
         interpolation,
@@ -5602,13 +5609,21 @@ fn gaussian_resample(mono: &[i16], idx: usize, frac: f64) -> i16 {
 
 #[cfg(test)]
 mod seq_studio_debug_tests {
-    use super::displayed_midi_program;
+    use super::{displayed_midi_program, reverb_depth_to_q14};
 
     #[test]
     fn midi_program_display_is_one_based_but_vab_index_is_raw() {
         assert_eq!(displayed_midi_program(0), 1);
         assert_eq!(displayed_midi_program(5), 6);
         assert_eq!(displayed_midi_program(127), 128);
+    }
+
+    #[test]
+    fn reverb_depth_to_q14_saturates_before_signed_cast() {
+        assert_eq!(reverb_depth_to_q14(0), 0);
+        assert_eq!(reverb_depth_to_q14(100), 0x4000);
+        assert_eq!(reverb_depth_to_q14(200), 0x7FFF);
+        assert_eq!(reverb_depth_to_q14(250), 0x7FFF);
     }
 }
 
