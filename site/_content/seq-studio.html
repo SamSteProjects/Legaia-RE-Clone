@@ -526,6 +526,10 @@ function renderCacheKey(seconds) {
   });
 }
 
+function activeRendererFunctionUsed() {
+  return "render_seq_studio_doc_spu_i16_internal";
+}
+
 function effectiveBpm() {
   const bpm = Number(timeline?.header?.effective_bpm || selected?.bpm || 0);
   return Number.isFinite(bpm) && bpm > 0 ? bpm : 120;
@@ -609,20 +613,8 @@ function renderBgm(seconds = RENDER_SECONDS) {
       selectedWidth(),
       selectedRoute()
     );
-  } else if (audio.render_seq_studio_doc_spu_i16) {
-    pcm = audio.render_seq_studio_doc_spu_i16(
-      selected.prot_index,
-      selected.vab_offset,
-      selected.seq_offset,
-      seconds,
-      selectedReverb(),
-      selectedInterp(),
-      selectedReverbDepth(),
-      $lowpass.checked,
-      selectedWidth()
-    );
   } else {
-    throw new Error("fresh document-based SEQ Studio renderer is missing from the WASM bundle");
+    throw new Error("routed document-based SEQ Studio renderer is missing from the WASM bundle");
   }
   renderCache.set(key, pcm);
   updateEngineProbe().catch((err) => console.warn("mix probe failed", err));
@@ -805,6 +797,7 @@ async function exportRouteDebug() {
     interpolation_name: interpName(),
     output_lowpass: $lowpass.checked,
     stereo_width_percent: selectedWidth(),
+    renderer_function_used: activeRendererFunctionUsed(),
     cases: {},
     diffs: {},
     checks: {}
@@ -817,6 +810,7 @@ async function exportRouteDebug() {
       label: c.label,
       route: c.route,
       depth_percent: c.depth,
+      renderer_function_used: "render_seq_studio_doc_spu_i16_internal",
       behavior: c.route === 4
         ? "Bypass Reverb Engine: reverb core is Off and should not process."
         : c.route === 2

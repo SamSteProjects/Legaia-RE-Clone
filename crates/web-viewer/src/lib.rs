@@ -4854,6 +4854,7 @@ impl LegaiaAudio {
         wet_percent: u8,
         _legacy_path: bool,
     ) -> Vec<i16> {
+        let reverb_route = reverb_route.min(REVERB_ROUTE_INPUT_MONITOR);
         let mut spu = legaia_engine_audio::Spu::new();
         let active_reverb_mode = if reverb_route == REVERB_ROUTE_BYPASS {
             0
@@ -4878,14 +4879,11 @@ impl LegaiaAudio {
         apply_reverb_send_route(&mut sequencer, reverb_route);
         let duration_samples =
             (duration_seconds * legaia_engine_audio::SPU_INTERNAL_RATE as f32) as usize;
-        let mute_dry = reverb_route == REVERB_ROUTE_WET_ONLY;
-        let mute_wet = reverb_route == REVERB_ROUTE_DRY || reverb_route == REVERB_ROUTE_BYPASS;
-        legaia_engine_audio::render_bgm_to_pcm_debug_mix(
+        legaia_engine_audio::render_bgm_to_pcm_debug_route(
             &mut sequencer,
             &mut spu,
             duration_samples,
-            mute_dry,
-            mute_wet,
+            reverb_route,
         )
     }
 
@@ -4949,6 +4947,7 @@ fn render_seq_studio_doc_spu_i16_internal(
     stereo_width_percent: u8,
     reverb_route: u8,
 ) -> Vec<i16> {
+    let reverb_route = reverb_route.min(REVERB_ROUTE_INPUT_MONITOR);
     let active_reverb_mode = if reverb_route == REVERB_ROUTE_BYPASS {
         0
     } else {
@@ -4974,19 +4973,12 @@ fn render_seq_studio_doc_spu_i16_internal(
 
     let duration_samples =
         (duration_seconds * legaia_engine_audio::SPU_INTERNAL_RATE as f32) as usize;
-    let mute_dry = reverb_route == REVERB_ROUTE_WET_ONLY;
-    let mute_wet = reverb_route == REVERB_ROUTE_DRY || reverb_route == REVERB_ROUTE_BYPASS;
     let mut pcm = Vec::with_capacity(duration_samples * 2);
     for _ in 0..duration_samples {
         sequencer.tick_sample(&mut spu);
-        let p = spu.tick_probe_mix(mute_dry, mute_wet);
-        if reverb_route == REVERB_ROUTE_INPUT_MONITOR {
-            pcm.push(p.reverb_in_l);
-            pcm.push(p.reverb_in_r);
-        } else {
-            pcm.push(p.final_l);
-            pcm.push(p.final_r);
-        }
+        let (l, r) = spu.tick_route_mix(reverb_route);
+        pcm.push(l);
+        pcm.push(r);
     }
     shape_seq_studio_output(&mut pcm, output_lowpass, stereo_width_percent);
     pcm

@@ -70,7 +70,7 @@ pub fn interpolation_index(counter: u32) -> usize {
 
 /// Clamp the SPU pitch step to the documented hardware maximum.
 pub fn pitch_step(vx_pitch: u16) -> u32 {
-    u32::from(vx_pitch).min(0x4000)
+    u32::from(vx_pitch).min(0x3FFF)
 }
 
 /// Advance a PSX SPU pitch counter by one output tick.
@@ -158,5 +158,13 @@ mod tests {
         counter = step_counter(counter, 0x0800);
         assert_eq!(sample_index(counter), 1);
         assert_eq!(interpolation_index(counter), 0x80);
+    }
+
+    #[test]
+    fn pitch_step_clamps_to_hardware_max() {
+        assert_eq!(pitch_step(0x3FFE), 0x3FFE);
+        assert_eq!(pitch_step(0x3FFF), 0x3FFF);
+        assert_eq!(pitch_step(0x4000), 0x3FFF);
+        assert_eq!(pitch_step(0xFFFF), 0x3FFF);
     }
 }

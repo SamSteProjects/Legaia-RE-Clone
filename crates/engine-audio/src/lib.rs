@@ -83,6 +83,27 @@ pub fn render_bgm_to_pcm_debug_mix(
     out
 }
 
+/// Debug render route selector used by validation tooling. Route values mirror
+/// SEQ Studio: 0 full mix, 2 dry only, 3 wet return only, 4 bypass-style dry
+/// monitor, 5 reverb input monitor. This is intentionally separate from
+/// [`render_bgm_to_pcm_debug_mix`] so older callers keep their simpler
+/// dry/wet mute contract.
+pub fn render_bgm_to_pcm_debug_route(
+    sequencer: &mut Sequencer,
+    spu: &mut Spu,
+    duration_samples: usize,
+    route: u8,
+) -> Vec<i16> {
+    let mut out = Vec::with_capacity(duration_samples * 2);
+    for _ in 0..duration_samples {
+        sequencer.tick_sample(spu);
+        let (l, r) = spu.tick_route_mix(route);
+        out.push(l);
+        out.push(r);
+    }
+    out
+}
+
 /// Decoded XA-ADPCM stream parked in the audio output for direct cpal-side
 /// mixing. Bypasses the SPU voice mixer (mirrors retail PSX hardware: XA
 /// audio is summed with the SPU output by the SPU's CD-input path, not by

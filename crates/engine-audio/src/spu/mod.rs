@@ -224,6 +224,22 @@ impl Spu {
         }
     }
 
+    /// Route-oriented debug tick. Route values mirror SEQ Studio:
+    /// 0/1 full mix, 2 dry only, 3 wet return only, 4 bypass-style dry monitor,
+    /// 5 reverb input monitor.
+    pub fn tick_route_mix(&mut self, route: u8) -> (i16, i16) {
+        let p = match route {
+            2 | 4 => self.tick_probe_mix(false, true),
+            3 => self.tick_probe_mix(true, false),
+            _ => self.tick_probe_mix(false, false),
+        };
+        if route == 5 {
+            (p.reverb_in_l, p.reverb_in_r)
+        } else {
+            (p.final_l, p.final_r)
+        }
+    }
+
     /// Drain `n` samples into a stereo i16 buffer (pairs of left, right).
     /// Convenience for tests + the cpal callback's resampler.
     pub fn render_into(&mut self, out: &mut [i16]) {
@@ -407,5 +423,37 @@ mod tests {
 
         assert!(any_return, "test fixture should produce a nonzero wet return");
         assert!(any_diff, "wetness must affect final mix when wet return exists");
+    }
+
+    #[test]
+    fn input_monitor_route_outputs_reverb_input_not_final_mix() {
+        let mut route_spu = synth_nonzero_loop_spu(true);
+        let mut probe_spu = route_spu.clone();
+        route_spu.set_reverb_mode(ReverbMode::Room);
+        probe_spu.set_reverb_mode(ReverbMode::Room);
+
+        let mut any_diff_from_final = false;
+        for _ in 0..12_000 {
+            let p = probe_spu.tick_probe_mix(false, false);
+            let input_monitor_frame = route_spu.tick_route_mix(5);
+            assert_eq!(input_monitor_frame, (p.reverb_in_l, p.reverb_in_r));
+            any_diff_from_final |= input_monitor_frame != (p.final_l, p.final_r);
+        }
+        assert!(
+            any_diff_from_final,
+            "fixture should distinguish input-monitor bus from final mix"
+        );
+    }
+
+    #[test]
+    fn bypass_reverb_engine_has_zero_wet_return() {
+        let mut bypass = synth_nonzero_loop_spu(true);
+        bypass.set_reverb_mode(ReverbMode::Off);
+        for _ in 0..4096 {
+            let p = bypass.tick_probe_mix(false, false);
+            assert_eq!(p.reverb_return_l, 0);
+            assert_eq!(p.reverb_return_r, 0);
+            assert_eq!(bypass.reverb.mode, ReverbMode::Off);
+        }
     }
 }
