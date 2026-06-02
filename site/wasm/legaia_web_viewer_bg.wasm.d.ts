@@ -23,6 +23,7 @@ export const legaiaaudio_render_note_audition_i16: (a: number, b: number, c: num
 export const legaiaaudio_render_seq_studio_doc_spu_i16: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
 export const legaiaaudio_render_seq_studio_doc_spu_i16_routed: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number];
 export const legaiaaudio_resume_bgm: (a: number) => any;
+export const legaiaaudio_reverb_impulse_report_json: (a: number, b: number) => [number, number];
 export const legaiaaudio_seq_bytes: (a: number, b: number, c: number) => [number, number];
 export const legaiaaudio_seq_note_voice_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
 export const legaiaaudio_seq_setup_events_json: (a: number, b: number, c: number) => [number, number];

@@ -4895,6 +4895,38 @@ impl LegaiaAudio {
     pub fn bgm_render_rate(&self) -> u32 {
         legaia_engine_audio::SPU_INTERNAL_RATE
     }
+
+    /// Return impulse-response metrics for the documented SPU reverb modes.
+    /// This is independent of disc loading and exists to validate that Room,
+    /// Hall, Echo, and Delay do not collapse to the same response.
+    pub fn reverb_impulse_report_json(&self, samples: usize) -> String {
+        let modes = [
+            (1u8, "Room", legaia_engine_audio::spu::ReverbMode::Room),
+            (5u8, "Hall", legaia_engine_audio::spu::ReverbMode::Hall),
+            (7u8, "Echo", legaia_engine_audio::spu::ReverbMode::Echo),
+            (8u8, "Delay", legaia_engine_audio::spu::ReverbMode::Delay),
+        ];
+        let reports: Vec<_> = modes
+            .into_iter()
+            .map(|(id, name, mode)| {
+                let r = legaia_engine_audio::spu::Reverb::impulse_report(mode, samples);
+                serde_json::json!({
+                    "mode": id,
+                    "name": name,
+                    "peak": r.peak,
+                    "first_nonzero_sample": r.first_nonzero_sample,
+                    "approximate_decay_sample": r.approximate_decay_sample,
+                    "major_tap_count": r.major_tap_count,
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "sample_rate": legaia_engine_audio::SPU_INTERNAL_RATE,
+            "samples": samples,
+            "reports": reports,
+        })
+        .to_string()
+    }
 }
 
 const REVERB_ROUTE_SCANNED_TONES: u8 = 0;

@@ -12,6 +12,18 @@
 //! for Room, Studio Small/Medium/Large, Hall, Half Echo, Space Echo, Chaos
 //! Echo, Delay, and Off. Values are coefficients/offsets, not Sony program
 //! bytes.
+//!
+//! DuckStation parity note:
+//! DuckStation's `src/core/spu.cpp::ProcessReverb` uses the same public SPU
+//! topology but names the registers after Mednafen (`IIR_ALPHA`, `ACC_COEF_*`,
+//! `FB_ALPHA`, `FB_X`, `MIX_DEST_*`, `IN_COEF`). This module keeps the PSXSPX
+//! names (`vIIR`, `vCOMB*`, `vAPF*`, `m*`, `d*`) because those are the names
+//! used by the project documentation and preset tables. The arithmetic below
+//! follows the DuckStation-shaped fixed-point stages: most reverb coefficients
+//! are Q14 with explicit `>> 1` averaging at IIR/APF mix points, while final
+//! APF output feedback uses Q15. The output return volume (`vLOUT/vROUT`) is
+//! intentionally external here as `Spu::reverb_wet_gain_q14`; the route/debug
+//! tools need to scale the wet return without changing internal feedback.
 
 /// Standard PSX SPU reverb modes. Names match libspu's `SsSetReverbType`
 /// enum.
@@ -44,6 +56,15 @@ pub enum ReverbMode {
 pub struct ReverbParams {
     pub size_bytes: usize,
     pub regs: ReverbRegs,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReverbImpulseReport {
+    pub mode: ReverbMode,
+    pub peak: i16,
+    pub first_nonzero_sample: Option<usize>,
+    pub approximate_decay_sample: Option<usize>,
+    pub major_tap_count: usize,
 }
 
 const FIR_TAPS: usize = 39;
@@ -321,69 +342,118 @@ impl Reverb {
         (l, r)
     }
 
+    pub fn impulse_report(mode: ReverbMode, samples: usize) -> ReverbImpulseReport {
+        let mut r = Reverb::new(mode);
+        let mut peak = 0i16;
+        let mut first_nonzero = None;
+        let mut last_above_floor = None;
+        let mut major_tap_count = 0usize;
+        let mut was_below_major = true;
+        for i in 0..samples {
+            let send = if i == 0 { 0x4000 } else { 0 };
+            let (l, rr) = r.tick(send, send);
+            let p = l.abs().max(rr.abs());
+            if p > 0 && first_nonzero.is_none() {
+                first_nonzero = Some(i);
+            }
+            peak = peak.max(p);
+            if p > 16 {
+                last_above_floor = Some(i);
+            }
+            if p > 512 {
+                if was_below_major {
+                    major_tap_count += 1;
+                    was_below_major = false;
+                }
+            } else {
+                was_below_major = true;
+            }
+        }
+        ReverbImpulseReport {
+            mode,
+            peak,
+            first_nonzero_sample: first_nonzero,
+            approximate_decay_sample: last_above_floor,
+            major_tap_count,
+        }
+    }
+
     fn process_22050(&mut self, send_l: i16, send_r: i16) -> (i16, i16) {
         let r = self.params.regs;
-        let lin = mul_q15(send_l as i32, r.v_lin);
-        let rin = mul_q15(send_r as i32, r.v_rin);
 
-        let l_same_old = self.read_minus_samples(r.m_lsame, 1);
-        let r_same_old = self.read_minus_samples(r.m_rsame, 1);
-        let l_same = mul_q15(
-            lin + mul_q15(self.read(r.d_lsame), r.v_wall) - l_same_old,
-            r.v_iir,
-        ) + l_same_old;
-        let r_same = mul_q15(
-            rin + mul_q15(self.read(r.d_rsame), r.v_wall) - r_same_old,
-            r.v_iir,
-        ) + r_same_old;
-        self.write(r.m_lsame, l_same);
-        self.write(r.m_rsame, r_same);
+        // DuckStation-shaped IIR input:
+        // IIR_INPUT_A = clamp16(((IIR_SRC_A * IIR_COEF)>>14 + (input * IN_COEF)>>14) >> 1)
+        // IIR_INPUT_B cross-feeds the opposite channel's DIFF source.
+        let l_iir_input_a = sat_i16_i32(avg_or_half(
+            mul_q14(self.read(r.d_lsame), r.v_wall) + mul_q14(send_l as i32, r.v_lin),
+        )) as i32;
+        let r_iir_input_a = sat_i16_i32(avg_or_half(
+            mul_q14(self.read(r.d_rsame), r.v_wall) + mul_q14(send_r as i32, r.v_rin),
+        )) as i32;
+        let l_iir_input_b = sat_i16_i32(avg_or_half(
+            mul_q14(self.read(r.d_rdiff), r.v_wall) + mul_q14(send_l as i32, r.v_lin),
+        )) as i32;
+        let r_iir_input_b = sat_i16_i32(avg_or_half(
+            mul_q14(self.read(r.d_ldiff), r.v_wall) + mul_q14(send_r as i32, r.v_rin),
+        )) as i32;
 
-        let l_diff_old = self.read_minus_samples(r.m_ldiff, 1);
-        let r_diff_old = self.read_minus_samples(r.m_rdiff, 1);
-        let l_diff = mul_q15(
-            lin + mul_q15(self.read(r.d_rdiff), r.v_wall) - l_diff_old,
-            r.v_iir,
-        ) + l_diff_old;
-        let r_diff = mul_q15(
-            rin + mul_q15(self.read(r.d_ldiff), r.v_wall) - r_diff_old,
-            r.v_iir,
-        ) + r_diff_old;
-        self.write(r.m_ldiff, l_diff);
-        self.write(r.m_rdiff, r_diff);
+        // Same/different-side IIR:
+        // IIR = clamp16(((input * IIR_ALPHA)>>14 + ((old * (0x8000-IIR_ALPHA))>>14)) >> 1)
+        let l_same = sat_i16_i32(avg_or_half(
+            mul_q14(l_iir_input_a, r.v_iir) + iir_feedback_q14(self.read_minus_samples(r.m_lsame, 1), r.v_iir),
+        ));
+        let r_same = sat_i16_i32(avg_or_half(
+            mul_q14(r_iir_input_a, r.v_iir) + iir_feedback_q14(self.read_minus_samples(r.m_rsame, 1), r.v_iir),
+        ));
+        let l_diff = sat_i16_i32(avg_or_half(
+            mul_q14(l_iir_input_b, r.v_iir) + iir_feedback_q14(self.read_minus_samples(r.m_ldiff, 1), r.v_iir),
+        ));
+        let r_diff = sat_i16_i32(avg_or_half(
+            mul_q14(r_iir_input_b, r.v_iir) + iir_feedback_q14(self.read_minus_samples(r.m_rdiff, 1), r.v_iir),
+        ));
+        self.write(r.m_lsame, l_same as i32);
+        self.write(r.m_rsame, r_same as i32);
+        self.write(r.m_ldiff, l_diff as i32);
+        self.write(r.m_rdiff, r_diff as i32);
 
-        let mut lout = mul_q15(self.read(r.m_lcomb1), r.v_comb1)
-            + mul_q15(self.read(r.m_lcomb2), r.v_comb2)
-            + mul_q15(self.read(r.m_lcomb3), r.v_comb3)
-            + mul_q15(self.read(r.m_lcomb4), r.v_comb4);
-        let mut rout = mul_q15(self.read(r.m_rcomb1), r.v_comb1)
-            + mul_q15(self.read(r.m_rcomb2), r.v_comb2)
-            + mul_q15(self.read(r.m_rcomb3), r.v_comb3)
-            + mul_q15(self.read(r.m_rcomb4), r.v_comb4);
+        // ACC/comb taps: all four coefficients are Q14.
+        let l_acc = mul_q14(self.read(r.m_lcomb1), r.v_comb1)
+            + mul_q14(self.read(r.m_lcomb2), r.v_comb2)
+            + mul_q14(self.read(r.m_lcomb3), r.v_comb3)
+            + mul_q14(self.read(r.m_lcomb4), r.v_comb4);
+        let r_acc = mul_q14(self.read(r.m_rcomb1), r.v_comb1)
+            + mul_q14(self.read(r.m_rcomb2), r.v_comb2)
+            + mul_q14(self.read(r.m_rcomb3), r.v_comb3)
+            + mul_q14(self.read(r.m_rcomb4), r.v_comb4);
 
-        let l_apf1_delayed = self.read_minus(r.m_lapf1, r.d_apf1);
-        let r_apf1_delayed = self.read_minus(r.m_rapf1, r.d_apf1);
-        lout -= mul_q15(l_apf1_delayed, r.v_apf1);
-        rout -= mul_q15(r_apf1_delayed, r.v_apf1);
-        self.write(r.m_lapf1, lout);
-        self.write(r.m_rapf1, rout);
-        lout = mul_q15(lout, r.v_apf1) + l_apf1_delayed;
-        rout = mul_q15(rout, r.v_apf1) + r_apf1_delayed;
+        // APF1/APF2 mapped from DuckStation MIX_DEST_A/B + FB_SRC_A/B:
+        // MDA = clamp16((ACC + ((FB_A * -FB_ALPHA)>>14)) >> 1)
+        // MDB = clamp16(FB_A + (((MDA*FB_ALPHA)>>14 + (FB_B*-FB_X)>>14) >> 1))
+        // out = clamp16(FB_B + ((MDB*FB_X)>>15))
+        let l_fb_a = self.read_wrapped_sub(r.m_lapf1, r.d_apf1);
+        let r_fb_a = self.read_wrapped_sub(r.m_rapf1, r.d_apf1);
+        let l_fb_b = self.read_wrapped_sub(r.m_lapf2, r.d_apf2);
+        let r_fb_b = self.read_wrapped_sub(r.m_rapf2, r.d_apf2);
 
-        let l_apf2_delayed = self.read_minus(r.m_lapf2, r.d_apf2);
-        let r_apf2_delayed = self.read_minus(r.m_rapf2, r.d_apf2);
-        lout -= mul_q15(l_apf2_delayed, r.v_apf2);
-        rout -= mul_q15(r_apf2_delayed, r.v_apf2);
-        self.write(r.m_lapf2, lout);
-        self.write(r.m_rapf2, rout);
-        lout = mul_q15(lout, r.v_apf2) + l_apf2_delayed;
-        rout = mul_q15(rout, r.v_apf2) + r_apf2_delayed;
+        let l_mda = sat_i16_i32(avg_or_half(l_acc + mul_q14(l_fb_a, neg_coeff(r.v_apf1))));
+        let r_mda = sat_i16_i32(avg_or_half(r_acc + mul_q14(r_fb_a, neg_coeff(r.v_apf1))));
+        let l_mdb = sat_i16_i32(
+            l_fb_a
+                + avg_or_half(mul_q14(l_mda as i32, r.v_apf1) + mul_q14(l_fb_b, neg_coeff(r.v_apf2))),
+        );
+        let r_mdb = sat_i16_i32(
+            r_fb_a
+                + avg_or_half(mul_q14(r_mda as i32, r.v_apf1) + mul_q14(r_fb_b, neg_coeff(r.v_apf2))),
+        );
+        let lout = sat_i16_i32(l_fb_b + mul_q15(l_mdb as i32, r.v_apf2));
+        let rout = sat_i16_i32(r_fb_b + mul_q15(r_mdb as i32, r.v_apf2));
 
-        // PSXSPX applies vLOUT/vROUT here. Those are common SPU reverb
-        // output-volume registers, not part of the preset table. The engine's
-        // `Spu::reverb_wet_gain_q14` models that return depth after this core,
-        // so do not reuse vLIN/vRIN as output gain.
-        (sat_i16(lout), sat_i16(rout))
+        self.write(r.m_lapf1, l_mda as i32);
+        self.write(r.m_rapf1, r_mda as i32);
+        self.write(r.m_lapf2, l_mdb as i32);
+        self.write(r.m_rapf2, r_mdb as i32);
+
+        (lout, rout)
     }
 
     fn offset_samples(offset_words: u16) -> usize {
@@ -398,18 +468,13 @@ impl Reverb {
         (self.pos + Self::offset_samples(offset_words)) % self.work.len()
     }
 
-    fn addr_minus(&self, offset_words: u16, delay_words: u16) -> usize {
-        let base = self.addr(offset_words);
-        let delay = Self::offset_samples(delay_words) % self.work.len();
-        (base + self.work.len() - delay) % self.work.len()
-    }
-
     fn read(&self, offset_words: u16) -> i32 {
         self.work[self.addr(offset_words)] as i32
     }
 
-    fn read_minus(&self, offset_words: u16, delay_words: u16) -> i32 {
-        self.work[self.addr_minus(offset_words, delay_words)] as i32
+    fn read_wrapped_sub(&self, offset_words: u16, delay_words: u16) -> i32 {
+        let offset = offset_words.wrapping_sub(delay_words);
+        self.read(offset)
     }
 
     fn read_minus_samples(&self, offset_words: u16, samples: usize) -> i32 {
@@ -424,8 +489,36 @@ impl Reverb {
     }
 }
 
+fn mul_q14(sample: i32, coeff: i16) -> i32 {
+    (sample * coeff as i32) >> 14
+}
+
 fn mul_q15(sample: i32, coeff: i16) -> i32 {
     (sample * coeff as i32) >> 15
+}
+
+fn avg_or_half(value: i32) -> i32 {
+    value >> 1
+}
+
+fn iir_feedback_q14(sample: i32, iir_alpha: i16) -> i32 {
+    if iir_alpha == i16::MIN {
+        if sample == i16::MIN as i32 {
+            0
+        } else {
+            sample * -65536 >> 14
+        }
+    } else {
+        (sample * (32768 - iir_alpha as i32)) >> 14
+    }
+}
+
+fn neg_coeff(coeff: i16) -> i16 {
+    if coeff == i16::MIN {
+        i16::MAX
+    } else {
+        -coeff
+    }
 }
 
 fn shift_in(history: &mut [i16; FIR_TAPS], sample: i16) {
@@ -447,6 +540,10 @@ fn fir_filter_i32(history: &[i16; FIR_TAPS]) -> i32 {
 
 fn sat_i16(v: i32) -> i16 {
     v.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+}
+
+fn sat_i16_i32(v: i32) -> i16 {
+    sat_i16(v)
 }
 
 #[cfg(test)]
@@ -538,6 +635,23 @@ mod tests {
         assert_ne!(room, hall);
         assert_ne!(hall, echo);
         assert_ne!(room, echo);
+    }
+
+    #[test]
+    fn impulse_reports_cover_room_hall_echo_delay() {
+        let room = Reverb::impulse_report(ReverbMode::Room, 40_000);
+        let hall = Reverb::impulse_report(ReverbMode::Hall, 40_000);
+        let echo = Reverb::impulse_report(ReverbMode::Echo, 40_000);
+        let delay = Reverb::impulse_report(ReverbMode::Delay, 40_000);
+
+        assert!(room.peak > 0);
+        assert!(hall.peak > 0);
+        assert!(echo.peak > 0);
+        assert!(delay.peak > 0);
+        assert_ne!(room, hall);
+        assert_ne!(hall, echo);
+        assert_ne!(hall, delay);
+        assert_ne!(echo, delay);
     }
 
     #[test]

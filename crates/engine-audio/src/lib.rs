@@ -965,6 +965,7 @@ mod tests {
             VabBank {
                 master_vol: 127,
                 samples: vec![],
+                program_attrs: vec![],
                 programs: vec![],
             },
         );

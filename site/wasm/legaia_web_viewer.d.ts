@@ -135,6 +135,12 @@ export class LegaiaAudio {
      */
     resume_bgm(): Promise<any>;
     /**
+     * Return impulse-response metrics for the documented SPU reverb modes.
+     * This is independent of disc loading and exists to validate that Room,
+     * Hall, Echo, and Delay do not collapse to the same response.
+     */
+    reverb_impulse_report_json(samples: number): string;
+    /**
      * Export a normalized SEQ byte stream in the retail Legaia header shape.
      */
     seq_bytes(prot_index: number, seq_offset: number): Uint8Array;
@@ -1144,6 +1150,7 @@ export interface InitOutput {
     readonly legaiaaudio_render_seq_studio_doc_spu_i16: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly legaiaaudio_render_seq_studio_doc_spu_i16_routed: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number];
     readonly legaiaaudio_resume_bgm: (a: number) => any;
+    readonly legaiaaudio_reverb_impulse_report_json: (a: number, b: number) => [number, number];
     readonly legaiaaudio_seq_bytes: (a: number, b: number, c: number) => [number, number];
     readonly legaiaaudio_seq_note_voice_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly legaiaaudio_seq_setup_events_json: (a: number, b: number, c: number) => [number, number];

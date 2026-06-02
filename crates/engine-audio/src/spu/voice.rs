@@ -185,7 +185,8 @@ impl Voice {
         self.adsr.tick(&self.adsr_cfg);
 
         // Advance fractional pitch counter and walk forward through samples.
-        self.sample_frac += self.pitch as u32;
+        let step = self.pitch.min(0x3FFF) as u32;
+        self.sample_frac += step;
         while self.sample_frac >= PITCH_UNITY as u32 {
             self.sample_frac -= PITCH_UNITY as u32;
             self.sample_idx += 1;
@@ -479,5 +480,39 @@ mod tests {
             "DuckStation-style order applies the current ADSR level before ticking it"
         );
         assert!(v.adsr.level > 0);
+    }
+
+    #[test]
+    fn gaussian_voice_taps_match_duckstation_order() {
+        let mut v = Voice {
+            interpolation: InterpolationMode::GaussianApprox,
+            sample_idx: 0,
+            sample_frac: 0x0800,
+            prev_block_tail: [-3000, -2000, -1000],
+            block_pcm: [0; SAMPLES_PER_BLOCK],
+            has_block: true,
+            ..Voice::default()
+        };
+        v.block_pcm[0] = 1000;
+        let i = gaussian::interpolation_index(v.sample_frac);
+        let expected = gaussian::interpolate(-3000, -2000, -1000, 1000, i);
+        assert_eq!(v.interpolated_sample(), expected);
+    }
+
+    #[test]
+    fn pitch_step_clamps_to_duckstation_max() {
+        let stream = synth_silence_stream(2, false);
+        let mut ram = SpuRam::new();
+        ram.write_at(0x1000, &stream);
+        let mut v = Voice {
+            start_addr: 0x1000,
+            pitch: 0xFFFF,
+            adsr_cfg: hold_forever_adsr(),
+            ..Voice::default()
+        };
+        v.key_on(&ram);
+        v.tick(&ram);
+        assert_eq!(v.sample_idx, 3);
+        assert_eq!(v.sample_frac, 0x0FFF);
     }
 }

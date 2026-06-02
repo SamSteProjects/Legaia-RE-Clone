@@ -31,7 +31,7 @@ use crate::spu::{
     ram::{SpuAllocator, TransferDirection},
     voice::PITCH_UNITY,
 };
-use legaia_vab::{VabReport, VagAtr};
+use legaia_vab::{ProgAtr, VabReport, VagAtr};
 
 /// Default sample rate used when exporting/auditioning decoded VAG bodies as
 /// standalone PCM. The SPU consumes one decoded ADPCM sample per 44.1 kHz
@@ -58,6 +58,7 @@ pub struct UploadedVag {
 pub struct VabBank {
     pub master_vol: u8,
     pub samples: Vec<Option<UploadedVag>>,
+    pub program_attrs: Vec<ProgAtr>,
     /// Per-program tone table. Index is program 0..=ps-1; each entry is
     /// the same Vec<VagAtr> that VabReport carries, copied so we don't
     /// need to keep VabReport alive.
@@ -116,6 +117,7 @@ impl VabBank {
         Self {
             master_vol: report.header.mvol,
             samples,
+            program_attrs: report.programs.clone(),
             programs: report.tones.clone(),
         }
     }
@@ -166,12 +168,18 @@ impl VabBank {
         }
         let pitch = pitch_register_for_tone(note, tone, pitch_bend);
         let bank_master = self.master_vol as i32;
-        let prog_vol = tone.vol as i32;
+        let program_attr = self.program_attrs.get(program);
+        let program_vol = program_attr.map(|p| p.mvol).unwrap_or(127).max(1) as i32;
+        let tone_vol = tone.vol as i32;
         let vel = velocity as i32;
-        // libspu mvol/vol/velocity all scale linearly into the 0..=0x3FFF
-        // voice register: vol = bank * prog * vel / (127^3) * 0x3FFF.
-        let combined = ((bank_master * prog_vol * vel) / (127 * 127)).min(0x3FFF) as i16;
-        let pan = tone.pan as i32; // 0..=127, 64 = center
+        // VAB master, program, tone, and note velocity all scale linearly into
+        // the 0..=0x3FFF SPU voice register range. Program-level mvol/mpan are
+        // parsed by `crates/vab`; ignoring them makes banks with non-default
+        // program headers too loud/quiet or panned incorrectly.
+        let combined =
+            ((bank_master * program_vol * tone_vol * vel) / (127 * 127 * 127)).min(0x3FFF) as i16;
+        let program_pan = program_attr.map(|p| p.mpan).unwrap_or(64) as i32;
+        let pan = ((program_pan + tone.pan as i32) / 2).clamp(0, 127);
         let (vol_l, vol_r) = pan_split(combined, pan);
         {
             let v = &mut spu.voices[voice];
@@ -359,6 +367,7 @@ mod tests {
         let bank = VabBank {
             master_vol: 127,
             samples: vec![],
+            program_attrs: vec![],
             programs: vec![],
         };
         let ok = bank.play_note(&mut spu, 0, 99, 60, 100);

@@ -817,9 +817,21 @@ async function exportRouteDebug() {
       label: c.label,
       route: c.route,
       depth_percent: c.depth,
+      behavior: c.route === 4
+        ? "Bypass Reverb Engine: reverb core is Off and should not process."
+        : c.route === 2
+          ? "Dry Only: wet return is muted, but the reverb core may still tick for timing parity."
+          : c.route === 5
+            ? "Reverb Input Monitor: exports the dry signal sent into the reverb core, not the wet output."
+            : c.route === 3
+              ? "Wet Return Only: exports only the reverb return with dry mix muted."
+              : "Full Mix: dry mix plus wet return scaled by depth_percent.",
       output: pcmStats(pcm),
       meters: mixProbe(seconds, c.route, c.depth)
     };
+  }
+  if (audio?.reverb_impulse_report_json) {
+    report.reverb_impulse_report = JSON.parse(audio.reverb_impulse_report_json(40000));
   }
   report.diffs.bypass_vs_dry_only = pcmDiffStats(rendered["bypass"], rendered["dry-only"]);
   report.diffs.dry_only_vs_full_mix_wet0 = pcmDiffStats(rendered["dry-only"], rendered["full-mix-wet0"]);

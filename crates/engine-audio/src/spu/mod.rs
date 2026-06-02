@@ -43,7 +43,7 @@ pub mod ram;
 pub mod reverb;
 pub mod voice;
 
-pub use reverb::{Reverb, ReverbMode, ReverbParams};
+pub use reverb::{Reverb, ReverbImpulseReport, ReverbMode, ReverbParams};
 
 use ram::SpuRam;
 use voice::{InterpolationMode, Voice};

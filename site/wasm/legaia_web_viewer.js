@@ -350,6 +350,25 @@ export class LegaiaAudio {
         return ret;
     }
     /**
+     * Return impulse-response metrics for the documented SPU reverb modes.
+     * This is independent of disc loading and exists to validate that Room,
+     * Hall, Echo, and Delay do not collapse to the same response.
+     * @param {number} samples
+     * @returns {string}
+     */
+    reverb_impulse_report_json(samples) {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.legaiaaudio_reverb_impulse_report_json(this.__wbg_ptr, samples);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
      * Export a normalized SEQ byte stream in the retail Legaia header shape.
      * @param {number} prot_index
      * @param {number} seq_offset
